@@ -1,4 +1,4 @@
-给Flclash和mihomo party做节点配置的js脚本。
+给Flclash和mihomo party，以及clash verge做节点配置的js脚本。
 
 具体功能包含如下：
 - 1.
