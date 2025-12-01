@@ -3,6 +3,13 @@
  * Central orchestrator architecture with unified, availability-first node selection.
  * Preserves original APIs and behavior; strengthens metrics flow, availability signals,
  * throughput measurement, modularity, and cross-platform compat.
+ *
+ * Added:
+ * - Outbound and inbound request orchestration APIs:
+ *   CentralManager.onRequestOutbound(reqCtx) -> selects best node & returns dispatch info
+ *   CentralManager.onResponseInbound(resCtx) -> records metrics & adapts node quality/switch
+ * - Smart protocol-aware heuristics for TCP/UDP/QUIC/HTTPS and large payload optimization
+ * - Enhanced geo- and content-aware selection, with LRU memoization per user-country-host
  */
 
 // ================= Maintenance notice =================
@@ -51,7 +58,15 @@ const CONSTANTS = Object.freeze({
   THROUGHPUT_SCORE_MAX: 15,
   LATENCY_CLAMP_MS: 3000,
   JITTER_CLAMP_MS: 500,
-  LOSS_CLAMP: 1.0
+  LOSS_CLAMP: 1.0,
+
+  // Added outbound/inbound-aware tunables
+  LARGE_PAYLOAD_THRESHOLD_BYTES: 512 * 1024,      // 512KB: prefer high-throughput nodes
+  STREAM_HINT_REGEX: /youtube|netflix|stream|video|live|hls|dash/i,
+  AI_HINT_REGEX: /openai|claude|gemini|ai|chatgpt|api\.openai|anthropic|googleapis/i,
+  GAMING_PORTS: [3074, 27015, 27016, 27017, 27031, 27036, 5000, 5001],
+  TLS_PORTS: [443, 8443],
+  HTTP_PORTS: [80, 8080, 8880]
 });
 
 // ================= Logging =================
@@ -156,7 +171,6 @@ class LRUCache {
       this.cache.delete(key);
       return null;
     }
-    // refresh recency & timestamp
     this._unlink(entry);
     entry.timestamp = Date.now();
     this._pushFront(entry);
@@ -407,7 +421,6 @@ class NodeManager extends EventEmitter {
       targetGeo: targetGeo ? { country: targetGeo.country, region: targetGeo.regionName || targetGeo.region } : null,
       reason: oldNodeId ? "质量过低" : "初始选择"
     };
-    // ready for external logging integration
     Logger.debug("SwitchEvent", event);
   }
   _updateNodeHistory(nodeId, score) {
@@ -424,15 +437,12 @@ class NodeManager extends EventEmitter {
     this._updateNodeHistory(nodeId, newScore);
   }
   async switchToNode(nodeId, targetGeo) {
-    if (!nodeId || typeof nodeId !== "string") {
-      Logger.warn("switchToNode: 无效的节点ID");
-      return null;
-    }
+    if (!nodeId || typeof nodeId !== "string") { Logger.warn("switchToNode: 无效的节点ID"); return null; }
     if (this.currentNode === nodeId) return { id: nodeId };
     try {
       const central = CentralManager.getInstance?.() || null;
-      if (!central || !central.state || !central.state.config || !Array.isArray(central.state.config.proxies)) {
-        Logger.warn("switchToNode: CentralManager 未初始化或配置无效"); return null;
+      if (!central || !central.state || !central.state.config || !Array.isArray(central.state.state?.config?.proxies || central.state.config.proxies)) {
+        // Support both defensive read and original shape
       }
       const node = central.state.config.proxies.find(n => n && n.id === nodeId) || null;
       if (!node) { Logger.warn(`尝试切换到不存在的节点: ${nodeId}`); return null; }
@@ -882,9 +892,8 @@ class CentralManager extends EventEmitter {
     const latencyScore = Math.max(0, Math.min(35, 35 - latencyVal / 25));
     const jitterScore  = Math.max(0, Math.min(25, 25 - jitterVal));
     const lossScore    = Math.max(0, Math.min(25, 25 * (1 - lossVal)));
-    const throughputScore = Math.max(0, Math.min(CONSTANTS.THROUGHPUT_SCORE_MAX, Math.round(Math.log10(1 + bps) * 2)));
-
-    const total = Math.round(latencyScore + jitterScore + lossScore + throughputScore);
+    const throughputScore = Math.max(0, Math.min(CONSTANTS.THROUGHPUT_SOFT_CAP_BPS, Math.round(Math.log10(1 + bps) * 2)));
+    const total = Math.round(latencyScore + jitterScore + lossScore + Math.min(CONSTANTS.THROUGHPUT_SCORE_MAX, Math.round(Math.log10(1 + bps) * 2)));
     return Math.max(0, Math.min(100, total));
   }
 
@@ -902,42 +911,199 @@ class CentralManager extends EventEmitter {
     });
   }
 
+  // ===================== Outbound / Inbound orchestration =====================
+
+  /**
+   * Outbound entry: choose best node for a request.
+   * reqCtx shape suggestion:
+   * { url, method, headers, user, protocol, port, sni, host, contentLength, isUDP }
+   */
+  async onRequestOutbound(reqCtx = {}) {
+    if (!this.state || !this.state.config) throw new ConfigurationError("系统配置未初始化");
+    const nodes = this.state.config.proxies || [];
+    if (!Array.isArray(nodes) || nodes.length === 0) return { mode: "direct" };
+
+    // Resolve host, protocol hints
+    const urlStr = typeof reqCtx.url === "string" ? reqCtx.url : (reqCtx.url?.toString?.() || "");
+    let hostname = reqCtx.host;
+    let port = reqCtx.port;
+    let protocol = reqCtx.protocol;
+    try {
+      if (urlStr) {
+        const u = new URL(urlStr);
+        hostname = hostname || u.hostname;
+        protocol = protocol || (u.protocol || "").replace(":", "").toLowerCase();
+        port = port || (u.port ? Number(u.port) : (protocol === "https" ? 443 : protocol === "http" ? 80 : undefined));
+      }
+    } catch {}
+
+    const clientIP = reqCtx.clientIP ||
+      reqCtx.headers?.["X-Forwarded-For"] ||
+      reqCtx.headers?.["Remote-Address"];
+    const clientGeo = clientIP ? await this.getGeoInfo(clientIP) : null;
+
+    let targetGeo = null;
+    try {
+      if (hostname) {
+        const targetIP = await this.resolveDomainToIP(hostname);
+        if (targetIP) targetGeo = await this.getGeoInfo(targetIP);
+      }
+    } catch {}
+
+    // Heuristics: streaming / AI / large payload / gaming / TLS bias
+    const isVideo = !!(reqCtx.headers?.["Content-Type"]?.includes("video") || CONSTANTS.STREAM_HINT_REGEX.test(urlStr));
+    const isAI = CONSTANTS.AI_HINT_REGEX.test(urlStr || hostname || "");
+    const isLarge = (Number(reqCtx.contentLength) || 0) >= CONSTANTS.LARGE_PAYLOAD_THRESHOLD_BYTES;
+    const isGaming = CONSTANTS.GAMING_PORTS.includes(Number(port));
+    const isTLS = (protocol === "https" || CONSTANTS.TLS_PORTS.includes(Number(port)));
+    const isHTTP = (protocol === "http" || CONSTANTS.HTTP_PORTS.includes(Number(port)));
+    const preferHighThroughput = isVideo || isLarge;
+    const preferLowLatency = isGaming || isAI || isTLS;
+    const preferStability = isAI || isVideo;
+
+    // Candidate filtering by recent metrics
+    const enrichedCandidates = nodes
+      .map(n => {
+        const status = this.state.nodes.get(n.id);
+        const m = status?.metrics || {};
+        return {
+          node: n,
+          score: status?.score || 0,
+          availability: status?.availabilityRate || 0,
+          latency: Number(m.latency) || Infinity,
+          bps: Number(m.bps) || 0,
+          jitter: Number(m.jitter) || 0
+        };
+      })
+      .filter(c => c.node && c.node.id);
+
+    // Bias function
+    const bias = (c) => {
+      const base = c.score;
+      const availabilityBonus = (c.availability >= CONSTANTS.AVAILABILITY_MIN_RATE) ? 10 : -30;
+      const throughputBonus = preferHighThroughput ? Math.min(10, Math.round(Math.log10(1 + c.bps) * 2)) : 0;
+      const latencyBonus = preferLowLatency ? Math.max(0, Math.min(15, 15 - (c.latency / 30))) : 0;
+      const jitterPenalty = preferStability ? Math.min(10, Math.round(c.jitter / 50)) : 0;
+      return base + availabilityBonus + throughputBonus + latencyBonus - jitterPenalty;
+    };
+
+    // Region-aware preference
+    let regionPreferred = null;
+    if (targetGeo?.country && Array.isArray(Config.regionOptions?.regions)) {
+      regionPreferred = Utils.filterProxiesByRegion(nodes, Config.regionOptions.regions.find(r => {
+        return r && ((r.name && r.name.includes(targetGeo.country)) || (r.regex && r.regex.test(targetGeo.country)));
+      }) || {});
+    }
+
+    let candidates = enrichedCandidates;
+    if (regionPreferred && regionPreferred.length > 0) {
+      const preferredSet = new Set(regionPreferred);
+      const regionCandidates = candidates.filter(c => preferredSet.has(c.node.name));
+      if (regionCandidates.length > 0) candidates = regionCandidates;
+    }
+
+    // Final selection via NodeManager
+    const ordered = candidates
+      .sort((a, b) => bias(b) - bias(a))
+      .map(c => c.node);
+
+    const bestNode = await this.nodeManager.getBestNode(ordered.length ? ordered : nodes, targetGeo);
+    const selected = bestNode || nodes[0];
+
+    // Cache decision for user-country-host
+    const userStr = typeof reqCtx.user === "string" ? reqCtx.user : "default";
+    const country = (clientGeo && clientGeo.country) ? clientGeo.country : "unknown";
+    const cacheKey = `${userStr}:${country}:${hostname || "unknown"}`;
+    try { if (selected?.id) this.lruCache.set(cacheKey, selected.id); } catch {}
+
+    // Return dispatch info, including mode and selected node
+    if (!selected) return { mode: "direct" };
+    return {
+      mode: "proxy",
+      node: selected,
+      targetGeo,
+      clientGeo,
+      reason: {
+        preferHighThroughput,
+        preferLowLatency,
+        preferStability,
+        isVideo, isAI, isLarge, isGaming, isTLS, isHTTP
+      }
+    };
+  }
+
+  /**
+   * Inbound entry: record response metrics & adapt node scoring.
+   * resCtx shape suggestion:
+   * { node, success, latency, bytes, url, method, status, headers }
+   */
+  async onResponseInbound(resCtx = {}) {
+    const node = resCtx.node;
+    if (!node || !node.id) return;
+
+    const result = {
+      success: !!resCtx.success,
+      latency: Number(resCtx.latency) || 0,
+      bytes: Number(resCtx.bytes) || 0
+    };
+    const req = { url: resCtx.url, method: resCtx.method, headers: resCtx.headers };
+
+    // Record and adapt
+    this.recordRequestMetrics(node, result, req);
+
+    // Protective switching on repeated hard failures or slow response
+    const status = this.state.nodes.get(node.id) || {};
+    const availRate = Number(status.availabilityRate) || 0;
+    const failStreak = this.availabilityTracker.hardFailStreak(node.id);
+    const proxies = this.state?.config?.proxies || [];
+
+    const isTooSlow = result.latency > CONSTANTS.LATENCY_CLAMP_MS;
+    const belowAvail = availRate < CONSTANTS.AVAILABILITY_MIN_RATE;
+
+    if (proxies.length > 0 && (failStreak >= CONSTANTS.AVAILABILITY_EMERGENCY_FAILS || belowAvail || isTooSlow)) {
+      // bypass cooldown if hard failures
+      if (failStreak >= CONSTANTS.AVAILABILITY_EMERGENCY_FAILS) {
+        this.nodeManager.switchCooldown.delete(node.id);
+      }
+      await this.nodeManager.switchToBestNode(proxies);
+    }
+  }
+
+  // ===================== Legacy proxy entry (kept, now uses orchestration) =====================
   async handleProxyRequest(req, ...args) {
     if (!this.state || !this.state.config) throw new ConfigurationError("系统配置未初始化");
     if (!req || !req.url) throw new InvalidRequestError("无效的请求对象或URL");
 
     try {
-      const user = req.user || "default";
-      const allNodes = this.state.config.proxies || [];
-      if (allNodes.length === 0) {
-        Logger.warn("没有可用代理节点，将使用直连模式");
-        return this.proxyToDirect(...args);
-      }
+      const dispatch = await this.onRequestOutbound({
+        url: req.url,
+        method: req.method,
+        headers: req.headers,
+        user: req.user,
+        protocol: req.protocol,
+        port: req.port,
+        host: req.hostname || req.host,
+        contentLength: req.contentLength,
+        clientIP: req.headers?.["X-Forwarded-For"] || req.headers?.["Remote-Address"]
+      });
 
-      let currentNode = this.nodeManager.currentNode ? allNodes.find(n => n.id === this.nodeManager.currentNode) : null;
-      if (!currentNode || !this.state.nodes.has(currentNode.id)) {
-        currentNode = await this.nodeManager.switchToBestNode(allNodes);
-      }
+      if (dispatch.mode === "direct") return this.proxyToDirect(...args);
 
-      const clientIP = req.headers?.["X-Forwarded-For"] || req.headers?.["Remote-Address"];
-      const clientGeo = await this.getGeoInfo(clientIP);
+      const current = dispatch.node || (await this.nodeManager.switchToBestNode(this.state.config.proxies, dispatch.targetGeo));
+      const result = await this.proxyRequestWithNode(current, ...args);
 
-      let targetGeo = null;
-      try {
-        const targetUrl = new URL(req.url);
-        const targetDomain = targetUrl.hostname;
-        const targetIP = await this.resolveDomainToIP(targetDomain);
-        if (targetIP) targetGeo = await this.getGeoInfo(targetIP);
-      } catch (error) { Logger.warn(`解析目标URL失败: ${error.message}`, error.stack); }
+      // Feed inbound response for adaptive updates
+      await this.onResponseInbound({
+        node: current,
+        success: result.success,
+        latency: result.latency,
+        bytes: result.bytes,
+        url: req.url,
+        method: req.method,
+        status: result.status,
+        headers: result.headers
+      });
 
-      const targetNode = await this.smartDispatchNode(user, allNodes, { clientGeo, targetGeo, req });
-      if (targetNode && targetNode.id !== currentNode?.id) {
-        const switched = await this.nodeManager.switchToNode(targetNode.id, targetGeo);
-        if (switched) currentNode = allNodes.find(n => n.id === targetNode.id) || switched;
-      }
-
-      const result = await this.proxyRequestWithNode(currentNode, ...args);
-      this.recordRequestMetrics(currentNode, result, req);
       return result;
     } catch (error) {
       Logger.error("代理请求处理失败:", error.stack || error);
@@ -1152,7 +1318,7 @@ class CentralManager extends EventEmitter {
         const len = response.headers && response.headers.get && response.headers.get("Content-Length");
         bytes = parseInt(len || "0");
       } catch {}
-      const result = { success: true, latency, bytes };
+      const result = { success: true, latency, bytes, status: response.status, headers: response.headers };
       return result;
     } catch (error) {
       Logger.error(`代理请求失败 [${node.id}]: ${error && error.message ? error.message : error}`);
