@@ -1,111 +1,13 @@
 "use strict";
 /**
- * Central Orchestrator（中央调度架构）
+ * Central Orchestrator（中央调度架构）- 优化版
  * - 保留原有 API 与行为，增强稳定性、隐私与跨平台兼容
  * - 智能节点选择，事件驱动，无周期轮询
  * - 指标流/可用性信号/吞吐量测量统一加固
  * - 出站/入站协议与业务感知优化
  * - GitHub 资源统一镜像加速（健康检测 + 原站回退 + 轮换测试目标）
+ * - 隐私模式（可选）：关闭外部地理查询，仅基于域名/本地推断
  */
-
-/* ===================== GitHub 访问加速（镜像健康检测 + Raw/Release + 多目标） ===================== */
-const GH_MIRRORS = [
-  "https://mirror.ghproxy.com/",
-  "https://github.moeyy.xyz/",
-  "https://ghproxy.com/",
-  "" // 原始 GitHub（作为最后回退）
-];
-
-// 轮换测试目标，避免单一路径失效
-const GH_TEST_TARGETS = [
-  "https://raw.githubusercontent.com/github/gitignore/main/Node.gitignore",
-  "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/main/README.md",
-  "https://raw.githubusercontent.com/cli/cli/trunk/README.md"
-];
-
-// 短时缓存镜像健康结果
-let __ghSelected = null;
-let __ghLastProbeTs = 0;
-const __GH_PROBE_TTL = 10 * 60 * 1000; // 10分钟
-
-// 运行期动态更新的前缀（用于 GH_RAW/GH_RELEASE）
-let GH_PROXY_PREFIX = ""; // 由选择器动态覆盖
-
-async function fetchWithTimeout(url, opts = {}, timeout = 5000) {
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const timer = timeout > 0 ? setTimeout(() => controller?.abort?.(), timeout) : null;
-  try {
-    const resp = await fetch(url, { ...opts, signal: controller?.signal });
-    return resp;
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-// 选择一个测试目标，以缓解单点失效；GET 比 HEAD 更兼容
-function pickTestTarget() {
-  const idx = Math.floor(Math.random() * GH_TEST_TARGETS.length);
-  return GH_TEST_TARGETS[idx];
-}
-
-// 探测某镜像是否可用
-async function __probeMirror(prefix, fetchFn) {
-  const testTarget = pickTestTarget();
-  const testUrl = prefix ? (prefix + testTarget) : testTarget; // "" 表示直连 GitHub
-  try {
-    const resp = await fetchFn(testUrl, { method: "GET", headers: { "User-Agent": CONSTANTS.DEFAULT_USER_AGENT } }, CONSTANTS.GEO_INFO_TIMEOUT);
-    return !!resp && resp.ok;
-  } catch {
-    return false;
-  }
-}
-
-// 封装 fetchFn 以统一 timeout 行为（在 Node 安全环境内）
-function makeTimedFetcher(runtimeFetch, timeoutMs) {
-  return async (url, opts, to = timeoutMs) => {
-    // 如果是浏览器 fetch，直接用 Promise.race 的超时；如果是 Node polyfill，仍用 AbortController
-    if (to && to > 0) {
-      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const timer = setTimeout(() => controller?.abort?.(), to);
-      try {
-        return await runtimeFetch(url, { ...(opts || {}), signal: controller?.signal });
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-    return runtimeFetch(url, opts || {});
-  };
-}
-
-// 选择最佳镜像（带缓存）
-async function selectBestMirror(runtimeFetch) {
-  const now = Date.now();
-  if (__ghSelected && (now - __ghLastProbeTs) < __GH_PROBE_TTL) return __ghSelected;
-
-  const timedFetch = makeTimedFetcher(runtimeFetch, CONSTANTS.GEO_INFO_TIMEOUT);
-
-  // 逐一探测镜像，最后才尝试直连 GitHub
-  for (const mirror of GH_MIRRORS) {
-    const ok = await __probeMirror(mirror, timedFetch);
-    if (ok) {
-      __ghSelected = mirror;
-      __ghLastProbeTs = now;
-      GH_PROXY_PREFIX = mirror; // 同步前缀
-      return mirror;
-    }
-  }
-
-  // 全部镜像失败 → 尝试原始 GitHub（""），但必须验证可用
-  const githubOk = await __probeMirror("", timedFetch);
-  __ghSelected = githubOk ? "" : GH_MIRRORS[0]; // 如果 GitHub 不可用，回到首镜像以便下次再测
-  __ghLastProbeTs = now;
-  GH_PROXY_PREFIX = __ghSelected;
-  return __ghSelected;
-}
-
-// 基于当前前缀构造 RAW / RELEASE URL（运行时可被动态改写）
-const GH_RAW = (path) => `${GH_PROXY_PREFIX}https://raw.githubusercontent.com/${path}`;
-const GH_RELEASE = (path) => `${GH_PROXY_PREFIX}https://github.com/${path}`;
 
 /* ===================== 平台检测 ===================== */
 const PLATFORM = (() => {
@@ -143,6 +45,7 @@ const CONSTANTS = Object.freeze({
   CACHE_CLEANUP_BATCH_SIZE: 50,
   MAX_RETRY_ATTEMPTS: 3,
   RETRY_DELAY_BASE: 200,
+  MAX_RETRY_BACKOFF_MS: 5000,
 
   DEFAULT_USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
   AVAILABILITY_MIN_RATE: 0.75,
@@ -159,7 +62,13 @@ const CONSTANTS = Object.freeze({
   AI_HINT_REGEX: /openai|claude|gemini|ai|chatgpt|api\.openai|anthropic|googleapis/i,
   GAMING_PORTS: [3074, 27015, 27016, 27017, 27031, 27036, 5000, 5001],
   TLS_PORTS: [443, 8443],
-  HTTP_PORTS: [80, 8080, 8880]
+  HTTP_PORTS: [80, 8080, 8880],
+
+  // 统一偏置系数（不改变原语义，仅集中定义）
+  BIAS_AVAIL_BONUS_OK: 10,
+  BIAS_AVAIL_PENALTY_BAD: -30,
+  BIAS_LATENCY_MAX_BONUS: 15,
+  BIAS_JITTER_MAX_PENALTY: 10
 });
 
 /* ===================== 日志输出（默认低噪音） ===================== */
@@ -328,17 +237,17 @@ class SuccessRateTracker {
   reset() { this.successCount = 0; this.totalCount = 0; this.hardFailStreak = 0; }
 }
 
-/* ===================== 工具函数（统一并发/重试） ===================== */
+/* ===================== 工具函数（统一并发/重试/校验） ===================== */
 const Utils = {
   sleep(ms = 0) { return new Promise(r => setTimeout(r, Math.max(0, ms | 0))); },
   async retry(fn, attempts = CONSTANTS.MAX_RETRY_ATTEMPTS, delay = CONSTANTS.RETRY_DELAY_BASE) {
     if (typeof fn !== "function") throw new Error("retry: 第一个参数必须是函数");
     const maxAttempts = Math.max(1, Math.min(10, Math.floor(attempts) || 3));
-    const baseDelay = Math.max(0, Math.min(5000, Math.floor(delay) || 200));
+    const baseDelay = Math.max(0, Math.min(CONSTANTS.MAX_RETRY_BACKOFF_MS, Math.floor(delay) || 200));
     let lastErr;
     for (let i = 0; i < maxAttempts; i++) {
       try { return await fn(); }
-      catch (e) { lastErr = e; if (i < maxAttempts - 1) await Utils.sleep(baseDelay * Math.pow(2, i)); }
+      catch (e) { lastErr = e; if (i < maxAttempts - 1) await Utils.sleep(Math.min(CONSTANTS.MAX_RETRY_BACKOFF_MS, baseDelay * Math.pow(2, i))); }
     }
     throw lastErr || new Error("retry: 所有重试都失败");
   },
@@ -404,6 +313,27 @@ const Utils = {
     const i = Math.floor(index); const f = index - i;
     return sorted[i] + (sorted[i + 1] - sorted[i]) * f;
   },
+  isValidDomain(domain) {
+    return typeof domain === "string"
+      && /^[a-zA-Z0-9.-]+$/.test(domain)
+      && !domain.startsWith(".")
+      && !domain.endsWith(".")
+      && !domain.includes("..");
+  },
+  isIPv4(ip) {
+    return typeof ip === "string" && /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
+  },
+  isPrivateIP(ip) {
+    if (!Utils.isIPv4(ip)) return false;
+    try {
+      const parts = ip.split(".").map(n => parseInt(n, 10));
+      if (parts[0] === 10) return true; // 10.0.0.0/8
+      if (parts[0] === 127) return true; // 127.0.0.0/8
+      if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
+      if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
+      return false;
+    } catch { return false; }
+  },
   filterProxiesByRegion(proxies, region) {
     if (!Array.isArray(proxies) || !region || !region.regex) return [];
     return proxies
@@ -442,6 +372,93 @@ const Utils = {
   }
 };
 
+/* ===================== GitHub 访问加速（镜像健康检测 + Raw/Release + 多目标） ===================== */
+const GH_MIRRORS = [
+  "https://mirror.ghproxy.com/",
+  "https://github.moeyy.xyz/",
+  "https://ghproxy.com/",
+  "" // 原始 GitHub（作为最后回退）
+];
+const GH_TEST_TARGETS = [
+  "https://raw.githubusercontent.com/github/gitignore/main/Node.gitignore",
+  "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/main/README.md",
+  "https://raw.githubusercontent.com/cli/cli/trunk/README.md"
+];
+
+// 运行期动态前缀（由选择器更新）
+let GH_PROXY_PREFIX = "";
+let __ghSelected = null;
+let __ghLastProbeTs = 0;
+const __GH_PROBE_TTL = 10 * 60 * 1000; // 10分钟
+let __ghSelectLock = Promise.resolve();
+
+/** 基于当前前缀构造 RAW / RELEASE URL（函数式，确保读取最新前缀） */
+const GH_RAW_URL = (path) => `${GH_PROXY_PREFIX}https://raw.githubusercontent.com/${path}`;
+const GH_RELEASE_URL = (path) => `${GH_PROXY_PREFIX}https://github.com/${path}`;
+
+function pickTestTarget() {
+  const idx = Math.floor(Math.random() * GH_TEST_TARGETS.length);
+  return GH_TEST_TARGETS[idx];
+}
+function makeTimedFetcher(runtimeFetch, timeoutMs) {
+  return async (url, opts, to = timeoutMs) => {
+    if (to && to > 0) {
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = setTimeout(() => controller?.abort?.(), to);
+      try {
+        return await runtimeFetch(url, { ...(opts || {}), signal: controller?.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return runtimeFetch(url, opts || {});
+  };
+}
+async function __probeMirror(prefix, fetchFn) {
+  const testTarget = pickTestTarget();
+  const testUrl = prefix ? (prefix + testTarget) : testTarget;
+  try {
+    const resp = await fetchFn(
+      testUrl,
+      { method: "GET", headers: { "User-Agent": CONSTANTS.DEFAULT_USER_AGENT } },
+      CONSTANTS.GEO_INFO_TIMEOUT
+    );
+    return !!resp && resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** 并行优选镜像（带单飞锁与TTL缓存） */
+async function selectBestMirror(runtimeFetch) {
+  const now = Date.now();
+  if (__ghSelected && (now - __ghLastProbeTs) < __GH_PROBE_TTL) return __ghSelected;
+
+  __ghSelectLock = (__ghSelectLock.then(async () => {
+    const timedFetch = makeTimedFetcher(runtimeFetch, CONSTANTS.GEO_INFO_TIMEOUT);
+    const tasks = GH_MIRRORS.map(m => __probeMirror(m, timedFetch).then(ok => ({ m, ok })).catch(() => ({ m, ok: false })));
+    const results = await Promise.all(tasks);
+    const healthy = results.filter(r => r.ok).map(r => r.m);
+
+    let chosen = "";
+    if (healthy.length > 0) {
+      chosen = healthy.includes("") ? "" : healthy[0];
+    } else {
+      chosen = __ghSelected ?? GH_MIRRORS[0];
+    }
+
+    __ghSelected = chosen;
+    __ghLastProbeTs = now;
+    GH_PROXY_PREFIX = chosen; // 集中更新
+    return chosen;
+  }).catch((e) => {
+    Logger.warn("selectBestMirror 失败，保持现有前缀:", e?.message || e);
+    return __ghSelected ?? "";
+  }));
+
+  return __ghSelectLock;
+}
+
 /* ===================== 节点管理器（旁路冷却统一） ===================== */
 class NodeManager extends EventEmitter {
   static getInstance() { if (!NodeManager.instance) NodeManager.instance = new NodeManager(); return NodeManager.instance; }
@@ -456,7 +473,8 @@ class NodeManager extends EventEmitter {
   isInCooldown(nodeId) { const end = this.switchCooldown.get(nodeId); return !!(end && Date.now() < end); }
   _getCooldownTime(nodeId) {
     const score = Math.max(0, Math.min(100, this.nodeQuality.get(nodeId) || 0));
-    return Math.max(CONSTANTS.MIN_SWITCH_COOLDOWN, Math.min(CONSTANTS.MAX_SWITCH_COOLDOWN, CONSTANTS.BASE_SWITCH_COOLDOWN * (1 + score / 100)));
+    const factor = 1 + (score / 100) * 0.9;
+    return Math.max(CONSTANTS.MIN_SWITCH_COOLDOWN, Math.min(CONSTANTS.MAX_SWITCH_COOLDOWN, CONSTANTS.BASE_SWITCH_COOLDOWN * factor));
   }
   _recordSwitchEvent(oldNodeId, newNodeId, targetGeo) {
     const event = {
@@ -498,25 +516,16 @@ class NodeManager extends EventEmitter {
   _selectBestPerformanceNode(nodes) {
     if (!Array.isArray(nodes) || nodes.length === 0) { Logger.warn("_selectBestPerformanceNode: 节点列表为空"); return null; }
     const central = CentralManager.getInstance?.() || null;
+
     const scoreFor = (node) => {
       if (!node || !node.id) return 0;
       const quality = this.nodeQuality.get(node.id) || 0;
       const nodeState = (central?.state?.nodes?.get(node.id)) || {};
       const metrics = nodeState.metrics || {};
       const availabilityRate = Number(nodeState.availabilityRate) || 0;
-      const availabilityPenalty = availabilityRate < CONSTANTS.AVAILABILITY_MIN_RATE ? -30 : 0;
+      const availabilityPenalty = availabilityRate < CONSTANTS.AVAILABILITY_MIN_RATE ? CONSTANTS.BIAS_AVAIL_PENALTY_BAD : 0;
 
-      const latencyVal = Math.max(0, Math.min(CONSTANTS.LATENCY_CLAMP_MS, Number(metrics.latency) || 1000));
-      const jitterVal = Math.max(0, Math.min(CONSTANTS.JITTER_CLAMP_MS, Number(metrics.jitter) || 100));
-      const lossVal = Math.max(0, Math.min(CONSTANTS.LOSS_CLAMP, Number(metrics.loss) || 0));
-      const bps = Math.max(0, Math.min(CONSTANTS.THROUGHPUT_SOFT_CAP_BPS, Number(metrics.bps) || 0));
-
-      const latencyScore = Math.max(0, Math.min(35, 35 - latencyVal / 25));
-      const jitterScore  = Math.max(0, Math.min(25, 25 - jitterVal));
-      const lossScore    = Math.max(0, Math.min(25, 25 * (1 - lossVal)));
-      const throughputScore = Math.max(0, Math.min(CONSTANTS.THROUGHPUT_SCORE_MAX, Math.round(Math.log10(1 + bps) * 2)));
-      const metricScore = Math.round(latencyScore + jitterScore + lossScore + throughputScore);
-
+      const { metricScore } = CentralManager.scoreComponents(metrics);
       const tracker = this.nodeSuccess.get(node.id);
       const successRatePercent = tracker && typeof tracker.rate === "number" ? Math.max(0, Math.min(100, tracker.rate * 100)) : 0;
 
@@ -587,6 +596,7 @@ class CentralManager extends EventEmitter {
     this.lruCache = new LRUCache({ maxSize: CONSTANTS.LRU_CACHE_MAX_SIZE, ttl: CONSTANTS.LRU_CACHE_TTL });
     this.geoInfoCache = new LRUCache({ maxSize: CONSTANTS.LRU_CACHE_MAX_SIZE, ttl: CONSTANTS.LRU_CACHE_TTL });
     this.eventListeners = null;
+    this._listenersRegistered = false;
 
     this.metricsManager = new MetricsManager(this.state);
     this.availabilityTracker = new AvailabilityTracker(this.state, this.nodeManager);
@@ -597,6 +607,22 @@ class CentralManager extends EventEmitter {
     Promise.resolve().then(() => {
       this.initialize().catch(err => Logger.error("CentralManager 初始化失败:", err && err.stack ? err.stack : err));
     }).catch(err => Logger.error("CentralManager 初始化调度失败:", err && err.stack ? err.stack : err));
+  }
+
+  // 评分组件归一：返回各分值与总分（不改变数值方案）
+  static scoreComponents(metrics = {}) {
+    const latencyVal = Math.max(0, Math.min(CONSTANTS.LATENCY_CLAMP_MS, Number(metrics.latency) || 0));
+    const jitterVal  = Math.max(0, Math.min(CONSTANTS.JITTER_CLAMP_MS, Number(metrics.jitter) || 0));
+    const lossVal    = Math.max(0, Math.min(CONSTANTS.LOSS_CLAMP, Number(metrics.loss) || 0));
+    const bps        = Math.max(0, Math.min(CONSTANTS.THROUGHPUT_SOFT_CAP_BPS, Number(metrics.bps) || 0));
+
+    const latencyScore = Math.max(0, Math.min(35, 35 - latencyVal / 25));
+    const jitterScore  = Math.max(0, Math.min(25, 25 - jitterVal));
+    const lossScore    = Math.max(0, Math.min(25, 25 * (1 - lossVal)));
+    const throughputScore = Math.max(0, Math.min(CONSTANTS.THROUGHPUT_SCORE_MAX, Math.round(Math.log10(1 + bps) * 2)));
+    const metricScore = Math.round(latencyScore + jitterScore + lossScore + throughputScore);
+    const total = Math.max(0, Math.min(100, metricScore));
+    return { latencyScore, jitterScore, lossScore, throughputScore, metricScore: total };
   }
 
   async _getFetchRuntime() {
@@ -620,7 +646,6 @@ class CentralManager extends EventEmitter {
     const { _fetch, _AbortController } = await this._getFetchRuntime();
     if (!_fetch) throw new Error("fetch 不可用于当前运行环境，且未找到可回退的实现");
 
-    // 动态更新镜像前缀（仅在 GH 资源路径时）
     if (url.startsWith("https://raw.githubusercontent.com/") || url.startsWith("https://github.com/")) {
       try {
         const best = await selectBestMirror(_fetch);
@@ -631,9 +656,12 @@ class CentralManager extends EventEmitter {
       }
     }
 
-    const defaultOptions = { headers: { "User-Agent": CONSTANTS.DEFAULT_USER_AGENT, ...(options.headers || {}) }, ...options };
+    const defaultOptions = {
+      ...options,
+      headers: { "User-Agent": CONSTANTS.DEFAULT_USER_AGENT, ...(options.headers || {}) },
+      redirect: options.redirect || "follow"
+    };
 
-    // Abort + 超时
     if (_AbortController && timeout > 0) {
       const controller = new _AbortController();
       defaultOptions.signal = controller.signal;
@@ -646,7 +674,7 @@ class CentralManager extends EventEmitter {
         throw err;
       }
     }
-    // 浏览器场景回退 Promise.race 超时
+
     if (timeout > 0) {
       const fp = _fetch(url, defaultOptions);
       const tp = new Promise((_, reject) => setTimeout(() => reject(new Error(`请求超时 (${timeout}ms): ${url}`)), timeout));
@@ -656,10 +684,15 @@ class CentralManager extends EventEmitter {
   }
 
   async initialize() {
+    try {
+      const { _fetch } = await this._getFetchRuntime();
+      if (_fetch) await selectBestMirror(_fetch);
+    } catch (e) { Logger.warn("初始化阶段 GH 镜像预选失败:", e?.message || e); }
+
     await this.loadAIDBFromFile().catch(err => Logger.warn("加载AI数据失败，使用默认值:", err && err.message ? err.message : err));
 
-    if (!this.eventListeners) {
-      try { this.setupEventListeners(); } catch (e) { Logger.warn("设置事件监听器失败:", e && e.message ? e.message : e); }
+    if (!this._listenersRegistered) {
+      try { this.setupEventListeners(); this._listenersRegistered = true; } catch (e) { Logger.warn("设置事件监听器失败:", e && e.message ? e.message : e); }
     }
 
     this.on("requestDetected", (targetIp) => {
@@ -684,7 +717,7 @@ class CentralManager extends EventEmitter {
 
   async destroy() {
     Logger.info("开始清理资源...");
-    try { this.cleanupEventListeners(); } catch (e) { Logger.warn("清理事件监听器失败:", e && e.message ? e.message : e); }
+    try { this.cleanupEventListeners(); this._listenersRegistered = false; } catch (e) { Logger.warn("清理事件监听器失败:", e && e.message ? e.message : e); }
     try { await this.saveAIDBToFile(); } catch (e) { Logger.warn("保存AI数据失败:", e && e.message ? e.message : e); }
     try { this.lruCache?.clear(); } catch (e) { Logger.warn("清理LRU缓存失败:", e && e.message ? e.message : e); }
     try { this.geoInfoCache?.clear(); } catch (e) { Logger.warn("清理地理信息缓存失败:", e && e.message ? e.message : e); }
@@ -742,17 +775,8 @@ class CentralManager extends EventEmitter {
   }
 
   calculateInitialQualityScore(metrics) {
-    metrics = metrics || {};
-    const latency = Math.max(0, Math.min(CONSTANTS.LATENCY_CLAMP_MS, Number(metrics.latency) || 0));
-    const loss    = Math.max(0, Math.min(CONSTANTS.LOSS_CLAMP, Number(metrics.loss) || 0));
-    const jitter  = Math.max(0, Math.min(CONSTANTS.JITTER_CLAMP_MS, Number(metrics.jitter) || 0));
-    const bps     = Math.max(0, Math.min(CONSTANTS.THROUGHPUT_SOFT_CAP_BPS, Number(metrics.bps) || 0));
-    const latencyScore = Math.max(0, Math.min(35, 35 - latency / 25));
-    const jitterScore  = Math.max(0, Math.min(25, 25 - jitter));
-    const lossScore    = Math.max(0, Math.min(25, 25 * (1 - loss)));
-    const throughputScore = Math.max(0, Math.min(CONSTANTS.THROUGHPUT_SCORE_MAX, Math.round(Math.log10(1 + bps) * 2)));
-    const total = Math.round(latencyScore + jitterScore + lossScore + throughputScore);
-    return Math.max(0, Math.min(100, total));
+    const { metricScore } = CentralManager.scoreComponents(metrics || {});
+    return metricScore;
   }
 
   async evaluateAllNodes() {
@@ -793,7 +817,10 @@ class CentralManager extends EventEmitter {
     let geoInfo = null;
     try {
       const nodeIp = (node.server && typeof node.server === "string") ? node.server.split(":")[0] : null;
-      if (nodeIp && /^(\d{1,3}\.){3}\d{1,3}$/.test(nodeIp)) { geoInfo = await this.getGeoInfo(nodeIp); }
+      const privacyOff = !(Config?.privacy && Config.privacy.geoExternalLookup === false);
+      if (Utils.isIPv4(nodeIp) && !Utils.isPrivateIP(nodeIp)) {
+        geoInfo = privacyOff ? await this.getGeoInfo(nodeIp) : this._getFallbackGeoInfo();
+      }
     } catch (e) { Logger.debug(`获取节点地理信息失败 (${node.id}):`, e.message); }
 
     try {
@@ -819,7 +846,8 @@ class CentralManager extends EventEmitter {
 
   async handleRequestWithGeoRouting(targetIp) {
     if (!targetIp || !this.state.config.proxies || this.state.config.proxies.length === 0) { Logger.warn("无法进行地理路由: 缺少目标IP或代理节点"); return; }
-    const targetGeo = await this.getGeoInfo(targetIp);
+    const privacyOff = !(Config?.privacy && Config.privacy.geoExternalLookup === false);
+    const targetGeo = privacyOff ? await this.getGeoInfo(targetIp) : this._getFallbackGeoInfo();
     if (!targetGeo) {
       Logger.warn("无法获取目标IP地理信息，使用默认路由");
       await this.nodeManager.switchToBestNode(this.state.config.proxies);
@@ -829,18 +857,8 @@ class CentralManager extends EventEmitter {
   }
 
   calculateNodeQualityScore(metrics) {
-    metrics = metrics || {};
-    const latencyVal = Math.max(0, Math.min(CONSTANTS.LATENCY_CLAMP_MS, Number(metrics.latency) || 0));
-    const jitterVal  = Math.max(0, Math.min(CONSTANTS.JITTER_CLAMP_MS, Number(metrics.jitter) || 0));
-    const lossVal    = Math.max(0, Math.min(CONSTANTS.LOSS_CLAMP, Number(metrics.loss) || 0));
-    const bps        = Math.max(0, Math.min(CONSTANTS.THROUGHPUT_SOFT_CAP_BPS, Number(metrics.bps) || 0));
-
-    const latencyScore = Math.max(0, Math.min(35, 35 - latencyVal / 25));
-    const jitterScore  = Math.max(0, Math.min(25, 25 - jitterVal));
-    const lossScore    = Math.max(0, Math.min(25, 25 * (1 - lossVal)));
-    const throughputScore = Math.max(0, Math.min(CONSTANTS.THROUGHPUT_SCORE_MAX, Math.round(Math.log10(1 + bps) * 2)));
-    const total = Math.round(latencyScore + jitterScore + lossScore + throughputScore);
-    return Math.max(0, Math.min(100, total));
+    const { metricScore } = CentralManager.scoreComponents(metrics || {});
+    return metricScore;
   }
 
   autoEliminateNodes() {
@@ -876,13 +894,14 @@ class CentralManager extends EventEmitter {
     } catch {}
 
     const clientIP = reqCtx.clientIP || reqCtx.headers?.["X-Forwarded-For"] || reqCtx.headers?.["Remote-Address"];
-    const clientGeo = clientIP ? await this.getGeoInfo(clientIP) : null;
+    const privacyOff = !(Config?.privacy && Config.privacy.geoExternalLookup === false);
+    const clientGeo = clientIP ? (privacyOff ? await this.getGeoInfo(clientIP) : this._getFallbackGeoInfo(hostname)) : null;
 
     let targetGeo = null;
     try {
-      if (hostname) {
+      if (hostname && Utils.isValidDomain(hostname)) {
         const targetIP = await this.resolveDomainToIP(hostname);
-        if (targetIP) targetGeo = await this.getGeoInfo(targetIP);
+        if (targetIP) targetGeo = privacyOff ? await this.getGeoInfo(targetIP) : this._getFallbackGeoInfo(hostname);
       }
     } catch {}
 
@@ -913,10 +932,10 @@ class CentralManager extends EventEmitter {
 
     const bias = (c) => {
       const base = c.score;
-      const availabilityBonus = (c.availability >= CONSTANTS.AVAILABILITY_MIN_RATE) ? 10 : -30;
+      const availabilityBonus = (c.availability >= CONSTANTS.AVAILABILITY_MIN_RATE) ? CONSTANTS.BIAS_AVAIL_BONUS_OK : CONSTANTS.BIAS_AVAIL_PENALTY_BAD;
       const throughputBonus = preferHighThroughput ? Math.min(10, Math.round(Math.log10(1 + c.bps) * 2)) : 0;
-      const latencyBonus = preferLowLatency ? Math.max(0, Math.min(15, 15 - (c.latency / 30))) : 0;
-      const jitterPenalty = preferStability ? Math.min(10, Math.round(c.jitter / 50)) : 0;
+      const latencyBonus = preferLowLatency ? Math.max(0, Math.min(CONSTANTS.BIAS_LATENCY_MAX_BONUS, CONSTANTS.BIAS_LATENCY_MAX_BONUS - (c.latency / 30))) : 0;
+      const jitterPenalty = preferStability ? Math.min(CONSTANTS.BIAS_JITTER_MAX_PENALTY, Math.round(c.jitter / 50)) : 0;
       return base + availabilityBonus + throughputBonus + latencyBonus - jitterPenalty;
     };
 
@@ -1079,8 +1098,15 @@ class CentralManager extends EventEmitter {
   async getGeoInfo(ip, domain) {
     if (!this.geoInfoCache) { Logger.error("地理信息缓存未初始化，使用默认配置"); this.geoInfoCache = new LRUCache({ maxSize: CONSTANTS.LRU_CACHE_MAX_SIZE, ttl: CONSTANTS.LRU_CACHE_TTL }); }
     if (!ip) { Logger.warn("获取地理信息失败: IP地址为空"); return this._getFallbackGeoInfo(domain); }
-    if (ip === "127.0.0.1" || ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172.16.")) { return { country: "Local", region: "Local" }; }
+    if (Utils.isPrivateIP(ip)) { return { country: "Local", region: "Local" }; }
     const cached = this.geoInfoCache.get(ip); if (cached) { Logger.debug(`使用缓存的地理信息: ${ip} -> ${cached.country}`); return cached; }
+
+    // 隐私模式：关闭外部查询，仅使用降级推断
+    if (Config?.privacy && Config.privacy.geoExternalLookup === false) {
+      const downgraded = this._getFallbackGeoInfo(domain);
+      this.geoInfoCache.set(ip, downgraded, CONSTANTS.GEO_FALLBACK_TTL);
+      return downgraded;
+    }
 
     try {
       const primary = await this._fetchGeoFromPrimaryAPI(ip);
@@ -1101,7 +1127,7 @@ class CentralManager extends EventEmitter {
   async getIpGeolocation(ip) { return this.getGeoInfo(ip); }
 
   async _fetchGeoFromPrimaryAPI(ip) {
-    if (!ip || typeof ip !== "string") { Logger.error("无效的IP地址:", ip); return null; }
+    if (!Utils.isIPv4(ip)) { Logger.error("无效的IP地址:", ip); return null; }
     try {
       const resp = await this._safeFetch(`https://ipapi.co/${ip}/json/`, { headers: { "User-Agent": "Mozilla/5.0" } }, CONSTANTS.GEO_INFO_TIMEOUT);
       if (!resp.ok) throw new Error(`HTTP error! status: ${resp.status}`);
@@ -1122,7 +1148,7 @@ class CentralManager extends EventEmitter {
   }
 
   _getFallbackGeoInfo(domain) {
-    if (domain && typeof domain === "string" && /^[a-zA-Z0-9.-]+$/.test(domain)) {
+    if (domain && typeof domain === "string" && Utils.isValidDomain(domain)) {
       const tld = domain.split(".").pop().toLowerCase();
       const map = { cn: "China", hk: "Hong Kong", tw: "Taiwan", jp: "Japan", kr: "Korea", us: "United States", uk: "United Kingdom", de: "Germany", fr: "France", ca: "Canada", au: "Australia" };
       if (map[tld]) { Logger.debug(`基于域名推断地理信息: ${domain} -> ${map[tld]}`); return { country: map[tld], region: "Unknown" }; }
@@ -1131,8 +1157,7 @@ class CentralManager extends EventEmitter {
   }
 
   async resolveDomainToIP(domain) {
-    if (!domain || typeof domain !== "string") { Logger.error("无效的域名参数"); return null; }
-    if (!/^[a-zA-Z0-9.-]+$/.test(domain)) { Logger.error(`无效的域名格式: ${domain}`); return null; }
+    if (!Utils.isValidDomain(domain)) { Logger.error(`无效的域名参数或格式: ${domain}`); return null; }
 
     const cacheKey = `dns:${domain}`;
     const cachedIP = this.lruCache.get(cacheKey); if (cachedIP) return cachedIP;
@@ -1143,9 +1168,15 @@ class CentralManager extends EventEmitter {
       "https://9.9.9.9/dns-query"
     ];
     try {
-      const queries = dohList.map(doh => this._safeFetch(`${doh}?name=${encodeURIComponent(domain)}&type=A`, { headers: { "Accept": "application/dns-json", "User-Agent": "Mozilla/5.0" } }, CONSTANTS.GEO_INFO_TIMEOUT));
-      const resp = await Promise.any(queries).catch(() => null);
+      const queries = dohList.map(doh => this._safeFetch(
+        `${doh}?name=${encodeURIComponent(domain)}&type=A`,
+        { headers: { "Accept": "application/dns-json", "User-Agent": "Mozilla/5.0" } },
+        CONSTANTS.GEO_INFO_TIMEOUT
+      ).catch(() => null));
+      let resp = null;
+      for (const p of queries) { const r = await p; if (r) { resp = r; break; } }
       if (!resp) return null;
+
       const data = await resp.json().catch(() => ({}));
       if (data.Answer && data.Answer.length > 0) {
         const ip = data.Answer[0].data;
@@ -1296,69 +1327,272 @@ class CentralManager extends EventEmitter {
     if (prediction.risk > 0.7) return -3;
     return 0;
   }
+
+  /* ===================== 配置处理（生成代理组与规则） ===================== */
+  processConfiguration(config) {
+    if (!config || typeof config !== "object") throw new ConfigurationError("processConfiguration: 配置对象无效");
+    let safeConfig;
+    try {
+      safeConfig = JSON.parse(JSON.stringify(config));
+      if (!safeConfig || typeof safeConfig !== "object") throw new Error("深拷贝结果无效");
+    } catch (e) {
+      throw new ConfigurationError(`配置对象无法深拷贝: ${e?.message || "unknown error"}`);
+    }
+
+    try { this.state.config = safeConfig; this.stats?.reset?.(); this.successTracker?.reset?.(); } catch (e) { Logger.warn("重置统计信息失败:", e.message); }
+
+    const proxyCount = Array.isArray(safeConfig?.proxies) ? safeConfig.proxies.length : 0;
+    const providerCount = (typeof safeConfig?.["proxy-providers"] === "object" && safeConfig["proxy-providers"] !== null)
+      ? Object.keys(safeConfig["proxy-providers"]).length : 0;
+    if (proxyCount === 0 && providerCount === 0) throw new ConfigurationError("未检测到任何代理节点或代理提供者");
+
+    try {
+      if (Config?.system && typeof Config.system === "object") Object.assign(safeConfig, Config.system);
+      if (Config?.dns && typeof Config.dns === "object") safeConfig.dns = Config.dns;
+    } catch (e) { Logger.warn("应用系统配置失败:", e.message); }
+
+    if (!Config || !Config.enable) { Logger.info("配置处理已禁用，返回原始配置"); return safeConfig; }
+
+    const regionProxyGroups = [];
+    let otherProxyGroups = [];
+    try {
+      if (Array.isArray(safeConfig.proxies)) { otherProxyGroups = safeConfig.proxies.filter(p => p && typeof p.name === "string").map(p => p.name); }
+    } catch (e) { Logger.warn("处理代理列表失败:", e.message); otherProxyGroups = []; }
+
+    try {
+      if (Config.regionOptions && Array.isArray(Config.regionOptions.regions)) {
+        Config.regionOptions.regions.forEach(region => {
+          if (!region || typeof region !== "object") return;
+          try {
+            const names = Utils.filterProxiesByRegion(safeConfig.proxies || [], region);
+            if (Array.isArray(names) && names.length > 0) {
+              regionProxyGroups.push({
+                ...(Config.common?.proxyGroup || {}), name: region.name || "Unknown",
+                type: "url-test", tolerance: 50, icon: region.icon || "", proxies: names
+              });
+              otherProxyGroups = otherProxyGroups.filter(n => !names.includes(n));
+            }
+          } catch (e) { Logger.debug(`处理地区 ${region.name || "unknown"} 失败:`, e.message); }
+        });
+      }
+    } catch (e) { Logger.warn("处理地区代理组失败:", e.message); }
+
+    let regionGroupNames = [];
+    try {
+      regionGroupNames = regionProxyGroups.filter(g => g && g.name).map(g => g.name);
+      if (otherProxyGroups.length > 0) regionGroupNames.push("其他节点");
+      regionGroupNames = Array.from(new Set(regionGroupNames));
+    } catch (e) { Logger.warn("构建区域组名称列表失败:", e.message); regionGroupNames = []; }
+
+    try {
+      safeConfig["proxy-groups"] = [{
+        ...(Config.common?.proxyGroup || {}), name: "默认节点", type: "select",
+        proxies: [...regionGroupNames, "直连"], icon: ICONS.Proxy
+      }];
+    } catch (e) { Logger.warn("初始化代理组失败:", e.message); safeConfig["proxy-groups"] = []; }
+
+    try {
+      safeConfig.proxies = Array.isArray(safeConfig?.proxies) ? safeConfig.proxies : [];
+      if (!safeConfig.proxies.some(p => p && p.name === "直连")) { safeConfig.proxies.push({ name: "直连", type: "direct" }); }
+    } catch (e) { Logger.warn("添加直连代理失败:", e.message); }
+
+    const ruleProviders = new Map();
+    const rules = [];
+    try {
+      if (Config.common?.ruleProvider && typeof Config.common.ruleProvider === "object") {
+        ruleProviders.set("applications", {
+          ...Config.common.ruleProvider,
+          behavior: "classical", format: "text",
+          url: URLS.rulesets.applications,
+          path: "./ruleset/DustinWin/applications.list"
+        });
+      }
+      if (Array.isArray(Config.preRules)) rules.push(...Config.preRules);
+      if (typeof Utils.createServiceGroups === "function") { Utils.createServiceGroups(safeConfig, regionGroupNames, ruleProviders, rules); }
+    } catch (e) { Logger.warn("处理服务规则失败:", e.message); }
+
+    try {
+      if (Config.common && Array.isArray(Config.common.defaultProxyGroups)) {
+        Config.common.defaultProxyGroups.forEach(group => {
+          if (group && typeof group === "object" && group.name) {
+            try {
+              safeConfig["proxy-groups"].push({
+                ...(Config.common?.proxyGroup || {}),
+                name: group.name || "Unknown",
+                type: "select",
+                proxies: [...(Array.isArray(group.proxies) ? group.proxies : []), ...regionGroupNames],
+                url: group.url || (Config.common?.proxyGroup?.url || ""),
+                icon: group.icon || ""
+              });
+            } catch (e) { Logger.debug(`添加默认代理组失败 (${group.name}):`, e.message); }
+          }
+        });
+      }
+    } catch (e) { Logger.warn("添加默认代理组失败:", e.message); }
+
+    try { if (regionProxyGroups.length > 0) safeConfig["proxy-groups"] = (safeConfig["proxy-groups"] || []).concat(regionProxyGroups); }
+    catch (e) { Logger.warn("添加区域代理组失败:", e.message); }
+
+    try {
+      if (otherProxyGroups.length > 0) {
+        safeConfig["proxy-groups"].push({
+          ...(Config.common?.proxyGroup || {}),
+          name: "其他节点", type: "select", proxies: otherProxyGroups,
+          icon: ICONS.WorldMap
+        });
+      }
+    } catch (e) { Logger.warn("添加其他节点组失败:", e.message); }
+
+    try { if (Config.common && Array.isArray(Config.common.postRules)) rules.push(...Config.common.postRules); safeConfig.rules = rules; }
+    catch (e) { Logger.warn("添加后置规则失败:", e.message); safeConfig.rules = rules; }
+
+    try { if (ruleProviders.size > 0) safeConfig["rule-providers"] = Object.fromEntries(ruleProviders); }
+    catch (e) { Logger.warn("添加规则提供者失败:", e.message); }
+
+    return safeConfig;
+  }
 }
 
-/* 资源（图标/规则/Geo 数据）统一前缀常量 */
+/* ===================== 指标管理/可用性追踪/吞吐估计 ===================== */
+class MetricsManager { constructor(state) { this.state = state; } append(nodeId, metrics) {
+  if (!nodeId) return; const arr = this.state.metrics.get(nodeId) || []; arr.push(metrics);
+  if (arr.length > CONSTANTS.FEATURE_WINDOW_SIZE) this.state.metrics.set(nodeId, arr.slice(-CONSTANTS.FEATURE_WINDOW_SIZE));
+  else this.state.metrics.set(nodeId, arr);
+}}
+
+class AvailabilityTracker {
+  constructor(state, nodeManager) { this.state = state; this.nodeManager = nodeManager; this.trackers = nodeManager.nodeSuccess; }
+  ensure(nodeId) { if (!this.trackers.get(nodeId)) this.trackers.set(nodeId, new SuccessRateTracker()); }
+  record(nodeId, success, opts = {}) {
+    this.ensure(nodeId);
+    const tracker = this.trackers.get(nodeId);
+    tracker.record(success, opts);
+    const rate = tracker.rate;
+    this.state.updateNodeStatus(nodeId, { availabilityRate: rate });
+  }
+  rate(nodeId) { return (this.trackers.get(nodeId)?.rate) || 0; }
+  hardFailStreak(nodeId) { return (this.trackers.get(nodeId)?.hardFailStreak) || 0; }
+}
+
+class ThroughputEstimator {
+  async tcpConnectLatency(host, port, timeout) {
+    if (!PLATFORM.isNode) throw new Error("Not Node");
+    const net = require("net");
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
+      const socket = new net.Socket();
+      let done = false;
+      const cleanup = (err) => { if (done) return; done = true; try { socket.destroy(); } catch {} if (err) reject(err); else resolve(Date.now() - start); };
+      socket.setTimeout(timeout, () => cleanup(new Error("TCP connect timeout")));
+      socket.once("error", err => cleanup(err));
+      socket.connect(port, host, () => cleanup());
+    });
+  }
+
+  async measureResponse(response, timeoutMs) {
+    let bytes = 0; let jitter = 0;
+    try {
+      if (response?.body?.getReader) {
+        const reader = response.body.getReader();
+        const maxBytes = 64 * 1024;
+        const readStart = Date.now();
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk?.done) break;
+          const value = chunk?.value || null;
+          if (value) {
+            const len = value.byteLength || value.length || 0;
+            bytes += len;
+            if (bytes >= maxBytes) break;
+          }
+        }
+        const readTime = Math.max(1, Date.now() - readStart);
+        const speedKbps = (bytes * 8) / readTime;
+        jitter = Math.max(1, 200 - Math.min(200, Math.round(speedKbps / 10)));
+        jitter = Math.min(jitter, CONSTANTS.JITTER_CLAMP_MS);
+        return { bytes, jitter };
+      }
+      if (typeof response?.arrayBuffer === "function") {
+        const buf = await response.arrayBuffer();
+        bytes = buf?.byteLength || 0; jitter = 0; return { bytes, jitter };
+      }
+      if (response?.headers?.get) {
+        const len = response.headers.get("Content-Length");
+        bytes = parseInt(len || "0", 10); jitter = 0; return { bytes, jitter };
+      }
+      return { bytes: 0, jitter: 0 };
+    } catch { return { bytes: 0, jitter: 0 }; }
+  }
+
+  bpsFromBytesLatency({ bytes = 0, latency = 0 }) {
+    const ms = Math.max(1, Number(latency) || 1);
+    const bps = Math.max(0, Math.round((bytes * 8 / ms) * 1000));
+    return Math.min(CONSTANTS.THROUGHPUT_SOFT_CAP_BPS, bps);
+  }
+}
+
+/* ===================== 资源（图标/规则/Geo 数据）统一前缀常量（动态函数应用） ===================== */
 const ICONS = {
-  Proxy: GH_RAW("Koolson/Qure/master/IconSet/Color/Proxy.png"),
-  WorldMap: GH_RAW("Koolson/Qure/master/IconSet/Color/World_Map.png"),
-  HongKong: GH_RAW("Koolson/Qure/master/IconSet/Color/Hong_Kong.png"),
-  UnitedStates: GH_RAW("Koolson/Qure/master/IconSet/Color/United_States.png"),
-  Japan: GH_RAW("Koolson/Qure/master/IconSet/Color/Japan.png"),
-  Korea: GH_RAW("Koolson/Qure/master/IconSet/Color/Korea.png"),
-  Singapore: GH_RAW("Koolson/Qure/master/IconSet/Color/Singapore.png"),
-  ChinaMap: GH_RAW("Koolson/Qure/master/IconSet/Color/China_Map.png"),
-  China: GH_RAW("Koolson/Qure/master/IconSet/Color/China.png"),
-  UnitedKingdom: GH_RAW("Koolson/Qure/master/IconSet/Color/United_Kingdom.png"),
-  Germany: GH_RAW("Koolson/Qure/master/IconSet/Color/Germany.png"),
-  Malaysia: GH_RAW("Koolson/Qure/master/IconSet/Color/Malaysia.png"),
-  Turkey: GH_RAW("Koolson/Qure/master/IconSet/Color/Turkey.png"),
-  ChatGPT: GH_RAW("Koolson/Qure/master/IconSet/Color/ChatGPT.png"),
-  YouTube: GH_RAW("Koolson/Qure/master/IconSet/Color/YouTube.png"),
-  Bilibili3: GH_RAW("Koolson/Qure/master/IconSet/Color/bilibili_3.png"),
-  Bahamut: GH_RAW("Koolson/Qure/master/IconSet/Color/Bahamut.png"),
-  DisneyPlus: GH_RAW("Koolson/Qure/master/IconSet/Color/Disney+.png"),
-  Netflix: GH_RAW("Koolson/Qure/master/IconSet/Color/Netflix.png"),
-  TikTok: GH_RAW("Koolson/Qure/master/IconSet/Color/TikTok.png"),
-  Spotify: GH_RAW("Koolson/Qure/master/IconSet/Color/Spotify.png"),
-  Pixiv: GH_RAW("Koolson/Qure/master/IconSet/Color/Pixiv.png"),
-  HBO: GH_RAW("Koolson/Qure/master/IconSet/Color/HBO.png"),
-  TVB: GH_RAW("Koolson/Qure/master/IconSet/Color/TVB.png"),
-  PrimeVideo: GH_RAW("Koolson/Qure/master/IconSet/Color/Prime_Video.png"),
-  Hulu: GH_RAW("Koolson/Qure/master/IconSet/Color/Hulu.png"),
-  Telegram: GH_RAW("Koolson/Qure/master/IconSet/Color/Telegram.png"),
-  Line: GH_RAW("Koolson/Qure/master/IconSet/Color/Line.png"),
-  Game: GH_RAW("Koolson/Qure/master/IconSet/Color/Game.png"),
-  Reject: GH_RAW("Koolson/Qure/master/IconSet/Color/Reject.png"),
-  Advertising: GH_RAW("Koolson/Qure/master/IconSet/Color/Advertising.png"),
-  Apple2: GH_RAW("Koolson/Qure/master/IconSet/Color/Apple_2.png"),
-  GoogleSearch: GH_RAW("Koolson/Qure/master/IconSet/Color/Google_Search.png"),
-  Microsoft: GH_RAW("Koolson/Qure/master/IconSet/Color/Microsoft.png"),
-  GitHub: GH_RAW("Koolson/Qure/master/IconSet/Color/GitHub.png"),
-  JP: GH_RAW("Koolson/Qure/master/IconSet/Color/JP.png"),
-  Download: GH_RAW("Koolson/Qure/master/IconSet/Color/Download.png"),
-  StreamingCN: GH_RAW("Koolson/Qure/master/IconSet/Color/StreamingCN.png"),
-  StreamingNotCN: GH_RAW("Koolson/Qure/master/IconSet/Color/Streaming!CN.png")
+  Proxy: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Proxy.png"),
+  WorldMap: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/World_Map.png"),
+  HongKong: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Hong_Kong.png"),
+  UnitedStates: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/United_States.png"),
+  Japan: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Japan.png"),
+  Korea: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Korea.png"),
+  Singapore: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Singapore.png"),
+  ChinaMap: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/China_Map.png"),
+  China: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/China.png"),
+  UnitedKingdom: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/United_Kingdom.png"),
+  Germany: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Germany.png"),
+  Malaysia: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Malaysia.png"),
+  Turkey: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Turkey.png"),
+  ChatGPT: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/ChatGPT.png"),
+  YouTube: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/YouTube.png"),
+  Bilibili3: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/bilibili_3.png"),
+  Bahamut: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Bahamut.png"),
+  DisneyPlus: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Disney+.png"),
+  Netflix: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Netflix.png"),
+  TikTok: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/TikTok.png"),
+  Spotify: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Spotify.png"),
+  Pixiv: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Pixiv.png"),
+  HBO: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/HBO.png"),
+  TVB: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/TVB.png"),
+  PrimeVideo: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Prime_Video.png"),
+  Hulu: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Hulu.png"),
+  Telegram: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Telegram.png"),
+  Line: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Line.png"),
+  Game: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Game.png"),
+  Reject: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Reject.png"),
+  Advertising: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Advertising.png"),
+  Apple2: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Apple_2.png"),
+  GoogleSearch: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Google_Search.png"),
+  Microsoft: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Microsoft.png"),
+  GitHub: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/GitHub.png"),
+  JP: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/JP.png"),
+  Download: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Download.png"),
+  StreamingCN: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/StreamingCN.png"),
+  StreamingNotCN: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Streaming!CN.png")
 };
 
 const URLS = {
   rulesets: {
-    // 保持与原功能一致（镜像前缀动态生效）
-    applications: GH_RAW("DustinWin/ruleset_geodata/clash-ruleset/applications.list"),
-    ai: GH_RAW("dahaha-365/YaNet/dist/rulesets/mihomo/ai.list"),
-    adblock_mihomo_mrs: GH_RAW("217heidai/adblockfilters/main/rules/adblockmihomo.mrs"),
-    category_bank_jp_mrs: GH_RAW("MetaCubeX/meta-rules-dat/meta/geo/geosite/category-bank-jp.mrs")
+    applications: GH_RAW_URL("DustinWin/ruleset_geodata/clash-ruleset/applications.list"),
+    ai: GH_RAW_URL("dahaha-365/YaNet/dist/rulesets/mihomo/ai.list"),
+    adblock_mihomo_mrs: GH_RAW_URL("217heidai/adblockfilters/main/rules/adblockmihomo.mrs"),
+    category_bank_jp_mrs: GH_RAW_URL("MetaCubeX/meta-rules-dat/meta/geo/geosite/category-bank-jp.mrs")
   },
   geox: {
-    geoip: GH_RELEASE("MetaCubeX/meta-rules-dat/releases/download/latest/geoip-lite.dat"),
-    geosite: GH_RELEASE("MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"),
-    mmdb: GH_RELEASE("MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"),
-    asn: GH_RELEASE("MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb")
+    geoip: GH_RELEASE_URL("MetaCubeX/meta-rules-dat/releases/download/latest/geoip-lite.dat"),
+    geosite: GH_RELEASE_URL("MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"),
+    mmdb: GH_RELEASE_URL("MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"),
+    asn: GH_RELEASE_URL("MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb")
   }
 };
 
 const Config = {
   enable: true,
+  // 隐私选项：默认启用外部地理查询；设置为 false 可完全禁用外发查询
+  privacy: { geoExternalLookup: true },
   ruleOptions: {
     apple: true, microsoft: true, github: true, google: true, openai: true, spotify: true,
     youtube: true, bahamut: true, netflix: true, tiktok: true, disney: true, pixiv: true,
@@ -1453,130 +1687,6 @@ const Config = {
     ],
     postRules: ["GEOSITE,private,DIRECT", "GEOIP,private,DIRECT,no-resolve", "GEOSITE,cn,国内网站", "GEOIP,cn,国内网站,no-resolve", "MATCH,其他外网"]
   }
-};
-
-/* ===================== 配置处理（生成代理组与规则） ===================== */
-CentralManager.prototype.processConfiguration = function (config) {
-  if (!config || typeof config !== "object") throw new ConfigurationError("processConfiguration: 配置对象无效");
-  let safeConfig;
-  try {
-    safeConfig = JSON.parse(JSON.stringify(config));
-    if (!safeConfig || typeof safeConfig !== "object") throw new Error("深拷贝结果无效");
-  } catch (e) {
-    throw new ConfigurationError(`配置对象无法深拷贝: ${e?.message || "unknown error"}`);
-  }
-
-  try { this.state.config = safeConfig; this.stats?.reset?.(); this.successTracker?.reset?.(); } catch (e) { Logger.warn("重置统计信息失败:", e.message); }
-
-  const proxyCount = Array.isArray(safeConfig?.proxies) ? safeConfig.proxies.length : 0;
-  const providerCount = (typeof safeConfig?.["proxy-providers"] === "object" && safeConfig["proxy-providers"] !== null)
-    ? Object.keys(safeConfig["proxy-providers"]).length : 0;
-  if (proxyCount === 0 && providerCount === 0) throw new ConfigurationError("未检测到任何代理节点或代理提供者");
-
-  try {
-    if (Config?.system && typeof Config.system === "object") Object.assign(safeConfig, Config.system);
-    if (Config?.dns && typeof Config.dns === "object") safeConfig.dns = Config.dns;
-  } catch (e) { Logger.warn("应用系统配置失败:", e.message); }
-
-  if (!Config || !Config.enable) { Logger.info("配置处理已禁用，返回原始配置"); return safeConfig; }
-
-  const regionProxyGroups = [];
-  let otherProxyGroups = [];
-  try {
-    if (Array.isArray(safeConfig.proxies)) { otherProxyGroups = safeConfig.proxies.filter(p => p && typeof p.name === "string").map(p => p.name); }
-  } catch (e) { Logger.warn("处理代理列表失败:", e.message); otherProxyGroups = []; }
-
-  try {
-    if (Config.regionOptions && Array.isArray(Config.regionOptions.regions)) {
-      Config.regionOptions.regions.forEach(region => {
-        if (!region || typeof region !== "object") return;
-        try {
-          const names = Utils.filterProxiesByRegion(safeConfig.proxies || [], region);
-          if (Array.isArray(names) && names.length > 0) {
-            regionProxyGroups.push({
-              ...(Config.common?.proxyGroup || {}), name: region.name || "Unknown",
-              type: "url-test", tolerance: 50, icon: region.icon || "", proxies: names
-            });
-            otherProxyGroups = otherProxyGroups.filter(n => !names.includes(n));
-          }
-        } catch (e) { Logger.debug(`处理地区 ${region.name || "unknown"} 失败:`, e.message); }
-      });
-    }
-  } catch (e) { Logger.warn("处理地区代理组失败:", e.message); }
-
-  let regionGroupNames = [];
-  try {
-    regionGroupNames = regionProxyGroups.filter(g => g && g.name).map(g => g.name);
-    if (otherProxyGroups.length > 0) regionGroupNames.push("其他节点");
-    regionGroupNames = Array.from(new Set(regionGroupNames));
-  } catch (e) { Logger.warn("构建区域组名称列表失败:", e.message); regionGroupNames = []; }
-
-  try {
-    safeConfig["proxy-groups"] = [{
-      ...(Config.common?.proxyGroup || {}), name: "默认节点", type: "select",
-      proxies: [...regionGroupNames, "直连"], icon: ICONS.Proxy
-    }];
-  } catch (e) { Logger.warn("初始化代理组失败:", e.message); safeConfig["proxy-groups"] = []; }
-
-  try {
-    safeConfig.proxies = Array.isArray(safeConfig?.proxies) ? safeConfig.proxies : [];
-    if (!safeConfig.proxies.some(p => p && p.name === "直连")) { safeConfig.proxies.push({ name: "直连", type: "direct" }); }
-  } catch (e) { Logger.warn("添加直连代理失败:", e.message); }
-
-  const ruleProviders = new Map();
-  const rules = [];
-  try {
-    if (Config.common?.ruleProvider && typeof Config.common.ruleProvider === "object") {
-      ruleProviders.set("applications", {
-        ...Config.common.ruleProvider,
-        behavior: "classical", format: "text",
-        url: URLS.rulesets.applications,
-        path: "./ruleset/DustinWin/applications.list"
-      });
-    }
-    if (Array.isArray(Config.preRules)) rules.push(...Config.preRules);
-    if (typeof Utils.createServiceGroups === "function") { Utils.createServiceGroups(safeConfig, regionGroupNames, ruleProviders, rules); }
-  } catch (e) { Logger.warn("处理服务规则失败:", e.message); }
-
-  try {
-    if (Config.common && Array.isArray(Config.common.defaultProxyGroups)) {
-      Config.common.defaultProxyGroups.forEach(group => {
-        if (group && typeof group === "object" && group.name) {
-          try {
-            safeConfig["proxy-groups"].push({
-              ...(Config.common?.proxyGroup || {}),
-              name: group.name || "Unknown",
-              type: "select",
-              proxies: [...(Array.isArray(group.proxies) ? group.proxies : []), ...regionGroupNames],
-              url: group.url || (Config.common?.proxyGroup?.url || ""),
-              icon: group.icon || ""
-            });
-          } catch (e) { Logger.debug(`添加默认代理组失败 (${group.name}):`, e.message); }
-        }
-      });
-    }
-  } catch (e) { Logger.warn("添加默认代理组失败:", e.message); }
-
-  try { if (regionProxyGroups.length > 0) safeConfig["proxy-groups"] = (safeConfig["proxy-groups"] || []).concat(regionProxyGroups); }
-  catch (e) { Logger.warn("添加区域代理组失败:", e.message); }
-
-  try {
-    if (otherProxyGroups.length > 0) {
-      safeConfig["proxy-groups"].push({
-        ...(Config.common?.proxyGroup || {}),
-        name: "其他节点", type: "select", proxies: otherProxyGroups,
-        icon: ICONS.WorldMap
-      });
-    }
-  } catch (e) { Logger.warn("添加其他节点组失败:", e.message); }
-
-  try { if (Config.common && Array.isArray(Config.common.postRules)) rules.push(...Config.common.postRules); safeConfig.rules = rules; }
-  catch (e) { Logger.warn("添加后置规则失败:", e.message); safeConfig.rules = rules; }
-
-  try { if (ruleProviders.size > 0) safeConfig["rule-providers"] = Object.fromEntries(ruleProviders); }
-  catch (e) { Logger.warn("添加规则提供者失败:", e.message); }
-
-  return safeConfig;
 };
 
 /* ===================== AI 数据存取（不持久化敏感IP） ===================== */
@@ -1691,83 +1801,6 @@ CentralManager.prototype.testNodeMultiMetrics = async function (node) {
     });
   }
 };
-
-/* ===================== 指标管理/可用性追踪/吞吐估计 ===================== */
-class MetricsManager { constructor(state) { this.state = state; } append(nodeId, metrics) {
-  if (!nodeId) return; const arr = this.state.metrics.get(nodeId) || []; arr.push(metrics);
-  if (arr.length > CONSTANTS.FEATURE_WINDOW_SIZE) this.state.metrics.set(nodeId, arr.slice(-CONSTANTS.FEATURE_WINDOW_SIZE));
-  else this.state.metrics.set(nodeId, arr);
-}}
-
-class AvailabilityTracker {
-  constructor(state, nodeManager) { this.state = state; this.nodeManager = nodeManager; this.trackers = nodeManager.nodeSuccess; }
-  ensure(nodeId) { if (!this.trackers.get(nodeId)) this.trackers.set(nodeId, new SuccessRateTracker()); }
-  record(nodeId, success, opts = {}) {
-    this.ensure(nodeId);
-    const tracker = this.trackers.get(nodeId);
-    tracker.record(success, opts);
-    const rate = tracker.rate;
-    this.state.updateNodeStatus(nodeId, { availabilityRate: rate });
-  }
-  rate(nodeId) { return (this.trackers.get(nodeId)?.rate) || 0; }
-  hardFailStreak(nodeId) { return (this.trackers.get(nodeId)?.hardFailStreak) || 0; }
-}
-
-class ThroughputEstimator {
-  async tcpConnectLatency(host, port, timeout) {
-    if (!PLATFORM.isNode) throw new Error("Not Node");
-    const net = require("net");
-    return new Promise((resolve, reject) => {
-      const start = Date.now();
-      const socket = new net.Socket();
-      let done = false;
-      const cleanup = (err) => { if (done) return; done = true; try { socket.destroy(); } catch {} if (err) reject(err); else resolve(Date.now() - start); };
-      socket.setTimeout(timeout, () => cleanup(new Error("TCP connect timeout")));
-      socket.once("error", err => cleanup(err));
-      socket.connect(port, host, () => cleanup());
-    });
-  }
-
-  async measureResponse(response, timeoutMs) {
-    let bytes = 0; let jitter = 0;
-    try {
-      if (response?.body?.getReader) {
-        const reader = response.body.getReader();
-        const maxBytes = 64 * 1024;
-        const readStart = Date.now();
-        while (true) {
-          const chunk = await reader.read();
-          if (chunk?.done) break;
-          const value = chunk?.value || null;
-          if (value) {
-            const len = value.byteLength || value.length || 0;
-            bytes += len;
-            if (bytes >= maxBytes) break;
-          }
-        }
-        const readTime = Math.max(1, Date.now() - readStart);
-        const speedKbps = (bytes * 8) / readTime;
-        jitter = Math.max(1, 200 - Math.min(200, Math.round(speedKbps / 10)));
-        return { bytes, jitter };
-      }
-      if (typeof response?.arrayBuffer === "function") {
-        const buf = await response.arrayBuffer();
-        bytes = buf?.byteLength || 0; jitter = 0; return { bytes, jitter };
-      }
-      if (response?.headers?.get) {
-        const len = response.headers.get("Content-Length");
-        bytes = parseInt(len || "0", 10); jitter = 0; return { bytes, jitter };
-      }
-      return { bytes: 0, jitter: 0 };
-    } catch { return { bytes: 0, jitter: 0 }; }
-  }
-
-  bpsFromBytesLatency({ bytes = 0, latency = 0 }) {
-    const ms = Math.max(1, Number(latency) || 1);
-    const bps = Math.max(0, Math.round((bytes * 8 / ms) * 1000));
-    return Math.min(CONSTANTS.THROUGHPUT_SOFT_CAP_BPS, bps);
-  }
-}
 
 /* ===================== 主流程入口 ===================== */
 function main(config) {
