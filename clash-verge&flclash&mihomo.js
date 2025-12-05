@@ -1,12 +1,13 @@
 "use strict";
 /**
- * Central Orchestrator（中央调度架构）- 优化版
+ * Central Orchestrator（中央调度架构）- 优化版 + 新区域自动分组扩展
  * - 保留原有 API 与行为，增强稳定性、隐私与跨平台兼容
  * - 智能节点选择，事件驱动，无周期轮询
  * - 指标流/可用性信号/吞吐量测量统一加固
  * - 出站/入站协议与业务感知优化
  * - GitHub 资源统一镜像加速（健康检测 + 原站回退 + 轮换测试目标）
  * - 隐私模式（可选）：关闭外部地理查询，仅基于域名/本地推断
+ * - 新区域自动分组：扫描节点名称中的地区语义，自动生成对应“url-test”分组（零干预）
  */
 
 /* ===================== 平台检测 ===================== */
@@ -64,7 +65,6 @@ const CONSTANTS = Object.freeze({
   TLS_PORTS: [443, 8443],
   HTTP_PORTS: [80, 8080, 8880],
 
-  // 统一偏置系数（不改变原语义，仅集中定义）
   BIAS_AVAIL_BONUS_OK: 10,
   BIAS_AVAIL_PENALTY_BAD: -30,
   BIAS_LATENCY_MAX_BONUS: 15,
@@ -385,14 +385,12 @@ const GH_TEST_TARGETS = [
   "https://raw.githubusercontent.com/cli/cli/trunk/README.md"
 ];
 
-// 运行期动态前缀（由选择器更新）
 let GH_PROXY_PREFIX = "";
 let __ghSelected = null;
 let __ghLastProbeTs = 0;
-const __GH_PROBE_TTL = 10 * 60 * 1000; // 10分钟
+const __GH_PROBE_TTL = 10 * 60 * 1000;
 let __ghSelectLock = Promise.resolve();
 
-/** 基于当前前缀构造 RAW / RELEASE URL（函数式，确保读取最新前缀） */
 const GH_RAW_URL = (path) => `${GH_PROXY_PREFIX}https://raw.githubusercontent.com/${path}`;
 const GH_RELEASE_URL = (path) => `${GH_PROXY_PREFIX}https://github.com/${path}`;
 
@@ -428,8 +426,6 @@ async function __probeMirror(prefix, fetchFn) {
     return false;
   }
 }
-
-/** 并行优选镜像（带单飞锁与TTL缓存） */
 async function selectBestMirror(runtimeFetch) {
   const now = Date.now();
   if (__ghSelected && (now - __ghLastProbeTs) < __GH_PROBE_TTL) return __ghSelected;
@@ -449,7 +445,7 @@ async function selectBestMirror(runtimeFetch) {
 
     __ghSelected = chosen;
     __ghLastProbeTs = now;
-    GH_PROXY_PREFIX = chosen; // 集中更新
+    GH_PROXY_PREFIX = chosen;
     return chosen;
   }).catch((e) => {
     Logger.warn("selectBestMirror 失败，保持现有前缀:", e?.message || e);
@@ -459,7 +455,7 @@ async function selectBestMirror(runtimeFetch) {
   return __ghSelectLock;
 }
 
-/* ===================== 节点管理器（旁路冷却统一） ===================== */
+/* ===================== 节点管理器 ===================== */
 class NodeManager extends EventEmitter {
   static getInstance() { if (!NodeManager.instance) NodeManager.instance = new NodeManager(); return NodeManager.instance; }
   constructor() {
@@ -583,7 +579,110 @@ class NodeManager extends EventEmitter {
   }
 }
 
-/* ===================== 中央管理器（跨平台 fetch 加固 + 镜像动态前缀） ===================== */
+/* ===================== 新区域自动分组管理器 ===================== */
+class RegionAutoManager {
+  constructor() {
+    this.knownRegexMap = this._buildKnownRegexMap();
+  }
+  _buildKnownRegexMap() {
+    return [
+      { key: "香港", regex: /港|🇭🇰|hk|hong\s?kong/i, icon: ICONS.HongKong, name: "HK香港" },
+      { key: "美国", regex: /美|🇺🇸|us|united\s?states|america/i, icon: ICONS.UnitedStates, name: "US美国" },
+      { key: "日本", regex: /日本|🇯🇵|jp|japan/i, icon: ICONS.Japan, name: "JP日本" },
+      { key: "韩国", regex: /韩|🇰🇷|kr|korea/i, icon: ICONS.Korea, name: "KR韩国" },
+      { key: "新加坡", regex: /新加坡|🇸🇬|sg|singapore/i, icon: ICONS.Singapore, name: "SG新加坡" },
+      { key: "中国大陆", regex: /中国|🇨🇳|cn|china/i, icon: ICONS.ChinaMap, name: "CN中国大陆" },
+      { key: "台湾省", regex: /台湾|🇹🇼|tw|taiwan/i, icon: ICONS.China, name: "TW台湾省" },
+      { key: "英国", regex: /英|🇬🇧|uk|united\s?kingdom|great\s?britain/i, icon: ICONS.UnitedKingdom, name: "GB英国" },
+      { key: "德国", regex: /德国|🇩🇪|de|germany/i, icon: ICONS.Germany, name: "DE德国" },
+      { key: "马来西亚", regex: /马来|🇲🇾|my|malaysia/i, icon: ICONS.Malaysia, name: "MY马来西亚" },
+      { key: "土耳其", regex: /土耳其|🇹🇷|tk|turkey/i, icon: ICONS.Turkey, name: "TK土耳其" }
+    ];
+  }
+  _normalizeName(name) {
+    return String(name || "").trim();
+  }
+  _hasRegion(regions, name) {
+    return Array.isArray(regions) && regions.some(r => r && r.name === name);
+  }
+  discoverRegionsFromProxies(proxies) {
+    const found = new Map();
+    if (!Array.isArray(proxies)) return found;
+
+    proxies.forEach(p => {
+      const name = this._normalizeName(p?.name);
+      if (!name) return;
+      for (const entry of this.knownRegexMap) {
+        if (entry.regex.test(name)) {
+          found.set(entry.name, { name: entry.name, regex: entry.regex, icon: entry.icon });
+        }
+      }
+      const hints = name.match(/[A-Za-z]{2,}|[\u4e00-\u9fa5]{2,}/g);
+      if (hints && hints.length) {
+        hints.forEach(h => {
+          const hNorm = h.toLowerCase();
+          const whitelist = {
+            es: { name: "ES西班牙", icon: ICONS.WorldMap },
+            ca: { name: "CA加拿大", icon: ICONS.WorldMap },
+            au: { name: "AU澳大利亚", icon: ICONS.WorldMap },
+            fr: { name: "FR法国", icon: ICONS.WorldMap },
+            it: { name: "IT意大利", icon: ICONS.WorldMap },
+            nl: { name: "NL荷兰", icon: ICONS.WorldMap },
+            ru: { name: "RU俄罗斯", icon: ICONS.WorldMap },
+            in: { name: "IN印度", icon: ICONS.WorldMap },
+            br: { name: "BR巴西", icon: ICONS.WorldMap },
+            ar: { name: "AR阿根廷", icon: ICONS.WorldMap }
+          };
+          if (whitelist[hNorm]) {
+            const item = whitelist[hNorm];
+            const cnName = item.name.replace(/[A-Z]{2}/, '').replace(/[^\u4e00-\u9fa5]/g, '');
+            const regex = new RegExp(`${hNorm}|${cnName}`, 'i');
+            found.set(item.name, { name: item.name, regex, icon: item.icon });
+          }
+        });
+      }
+    });
+    return found;
+  }
+  mergeNewRegions(configRegions, discoveredMap) {
+    const merged = Array.isArray(configRegions) ? [...configRegions] : [];
+    for (const region of discoveredMap.values()) {
+      if (!this._hasRegion(merged, region.name)) {
+        merged.push({
+          name: region.name,
+          regex: region.regex,
+          icon: region.icon || ICONS.WorldMap
+        });
+      }
+    }
+    return merged;
+  }
+  buildRegionGroups(config, regions) {
+    const regionProxyGroups = [];
+    let otherProxyNames = [];
+    try {
+      otherProxyNames = (config.proxies || []).filter(p => p && typeof p.name === "string").map(p => p.name);
+    } catch { otherProxyNames = []; }
+
+    regions.forEach(region => {
+      const names = Utils.filterProxiesByRegion(config.proxies || [], region);
+      if (Array.isArray(names) && names.length > 0) {
+        regionProxyGroups.push({
+          ...(Config.common?.proxyGroup || {}),
+          name: region.name || "Unknown",
+          type: "url-test",
+          tolerance: 50,
+          icon: region.icon || ICONS.WorldMap,
+          proxies: names
+        });
+        otherProxyNames = otherProxyNames.filter(n => !names.includes(n));
+      }
+    });
+    return { regionProxyGroups, otherProxyNames: Array.from(new Set(otherProxyNames)) };
+  }
+}
+
+/* ===================== 中央管理器 ===================== */
 class CentralManager extends EventEmitter {
   static getInstance() { if (!CentralManager.instance) CentralManager.instance = new CentralManager(); return CentralManager.instance; }
   constructor() {
@@ -601,6 +700,7 @@ class CentralManager extends EventEmitter {
     this.metricsManager = new MetricsManager(this.state);
     this.availabilityTracker = new AvailabilityTracker(this.state, this.nodeManager);
     this.throughputEstimator = new ThroughputEstimator();
+    this.regionAutoManager = new RegionAutoManager();
 
     CentralManager.instance = this;
 
@@ -609,7 +709,6 @@ class CentralManager extends EventEmitter {
     }).catch(err => Logger.error("CentralManager 初始化调度失败:", err && err.stack ? err.stack : err));
   }
 
-  // 评分组件归一：返回各分值与总分（不改变数值方案）
   static scoreComponents(metrics = {}) {
     const latencyVal = Math.max(0, Math.min(CONSTANTS.LATENCY_CLAMP_MS, Number(metrics.latency) || 0));
     const jitterVal  = Math.max(0, Math.min(CONSTANTS.JITTER_CLAMP_MS, Number(metrics.jitter) || 0));
@@ -750,7 +849,7 @@ class CentralManager extends EventEmitter {
   async onNetworkOnline() { Logger.info("网络恢复，触发节点评估..."); await this.evaluateAllNodes(); }
   async onPerformanceThresholdBreached(nodeId) {
     Logger.info(`节点 ${nodeId} 性能阈值突破，触发单节点评估...`);
-    const node = this.state.config.proxies?.find(n => n.id === nodeId);
+    const node = this.state.config.proxies?.find(n => n && n.id === nodeId);
     if (node) await this.evaluateNodeQuality(node);
     else Logger.warn(`节点 ${nodeId} 不存在，无法评估`);
   }
@@ -1101,7 +1200,6 @@ class CentralManager extends EventEmitter {
     if (Utils.isPrivateIP(ip)) { return { country: "Local", region: "Local" }; }
     const cached = this.geoInfoCache.get(ip); if (cached) { Logger.debug(`使用缓存的地理信息: ${ip} -> ${cached.country}`); return cached; }
 
-    // 隐私模式：关闭外部查询，仅使用降级推断
     if (Config?.privacy && Config.privacy.geoExternalLookup === false) {
       const downgraded = this._getFallbackGeoInfo(domain);
       this.geoInfoCache.set(ip, downgraded, CONSTANTS.GEO_FALLBACK_TTL);
@@ -1328,7 +1426,6 @@ class CentralManager extends EventEmitter {
     return 0;
   }
 
-  /* ===================== 配置处理（生成代理组与规则） ===================== */
   processConfiguration(config) {
     if (!config || typeof config !== "object") throw new ConfigurationError("processConfiguration: 配置对象无效");
     let safeConfig;
@@ -1353,34 +1450,18 @@ class CentralManager extends EventEmitter {
 
     if (!Config || !Config.enable) { Logger.info("配置处理已禁用，返回原始配置"); return safeConfig; }
 
-    const regionProxyGroups = [];
-    let otherProxyGroups = [];
     try {
-      if (Array.isArray(safeConfig.proxies)) { otherProxyGroups = safeConfig.proxies.filter(p => p && typeof p.name === "string").map(p => p.name); }
-    } catch (e) { Logger.warn("处理代理列表失败:", e.message); otherProxyGroups = []; }
+      const discovered = this.regionAutoManager.discoverRegionsFromProxies(safeConfig.proxies || []);
+      const mergedRegions = this.regionAutoManager.mergeNewRegions(Config.regionOptions?.regions || [], discovered);
+      Config.regionOptions.regions = mergedRegions;
+    } catch (e) { Logger.warn("自动发现新区域失败（不影响原逻辑）:", e.message); }
 
-    try {
-      if (Config.regionOptions && Array.isArray(Config.regionOptions.regions)) {
-        Config.regionOptions.regions.forEach(region => {
-          if (!region || typeof region !== "object") return;
-          try {
-            const names = Utils.filterProxiesByRegion(safeConfig.proxies || [], region);
-            if (Array.isArray(names) && names.length > 0) {
-              regionProxyGroups.push({
-                ...(Config.common?.proxyGroup || {}), name: region.name || "Unknown",
-                type: "url-test", tolerance: 50, icon: region.icon || "", proxies: names
-              });
-              otherProxyGroups = otherProxyGroups.filter(n => !names.includes(n));
-            }
-          } catch (e) { Logger.debug(`处理地区 ${region.name || "unknown"} 失败:`, e.message); }
-        });
-      }
-    } catch (e) { Logger.warn("处理地区代理组失败:", e.message); }
+    const { regionProxyGroups, otherProxyNames } = this.regionAutoManager.buildRegionGroups(safeConfig, Config.regionOptions.regions || []);
 
     let regionGroupNames = [];
     try {
       regionGroupNames = regionProxyGroups.filter(g => g && g.name).map(g => g.name);
-      if (otherProxyGroups.length > 0) regionGroupNames.push("其他节点");
+      if (otherProxyNames.length > 0) regionGroupNames.push("其他节点");
       regionGroupNames = Array.from(new Set(regionGroupNames));
     } catch (e) { Logger.warn("构建区域组名称列表失败:", e.message); regionGroupNames = []; }
 
@@ -1434,10 +1515,10 @@ class CentralManager extends EventEmitter {
     catch (e) { Logger.warn("添加区域代理组失败:", e.message); }
 
     try {
-      if (otherProxyGroups.length > 0) {
+      if (otherProxyNames.length > 0) {
         safeConfig["proxy-groups"].push({
           ...(Config.common?.proxyGroup || {}),
-          name: "其他节点", type: "select", proxies: otherProxyGroups,
+          name: "其他节点", type: "select", proxies: otherProxyNames,
           icon: ICONS.WorldMap
         });
       }
@@ -1450,6 +1531,24 @@ class CentralManager extends EventEmitter {
     catch (e) { Logger.warn("添加规则提供者失败:", e.message); }
 
     return safeConfig;
+  }
+
+  selfTest() {
+    try {
+      const demoConfig = {
+        proxies: [
+          { id: "n1", name: "香港HK x1", type: "http", server: "1.2.3.4:80" },
+          { id: "n2", name: "US美国✕2", type: "http", server: "5.6.7.8:80" },
+          { id: "n3", name: "ES西班牙 x1", type: "http", server: "9.9.9.9:80" }
+        ]
+      };
+      const out = this.processConfiguration(demoConfig);
+      const groups = out["proxy-groups"].map(g => g.name);
+      if (!groups.includes("HK香港")) throw new Error("未生成香港分组");
+      if (!groups.includes("US美国")) throw new Error("未生成美国分组");
+      if (!groups.includes("ES西班牙")) throw new Error("未自动识别ES西班牙分组");
+      Logger.info("自检通过：自动地区分组生成正常");
+    } catch (e) { Logger.error("自检失败:", e.message); }
   }
 }
 
@@ -1531,7 +1630,7 @@ class ThroughputEstimator {
   }
 }
 
-/* ===================== 资源（图标/规则/Geo 数据）统一前缀常量（动态函数应用） ===================== */
+/* ===================== 资源（图标/规则/Geo 数据）统一前缀常量 ===================== */
 const ICONS = {
   Proxy: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/Proxy.png"),
   WorldMap: GH_RAW_URL("Koolson/Qure/master/IconSet/Color/World_Map.png"),
@@ -1589,9 +1688,9 @@ const URLS = {
   }
 };
 
+/* ===================== 基础配置（保持原有） ===================== */
 const Config = {
   enable: true,
-  // 隐私选项：默认启用外部地理查询；设置为 false 可完全禁用外发查询
   privacy: { geoExternalLookup: true },
   ruleOptions: {
     apple: true, microsoft: true, github: true, google: true, openai: true, spotify: true,
@@ -1689,7 +1788,7 @@ const Config = {
   }
 };
 
-/* ===================== AI 数据存取（不持久化敏感IP） ===================== */
+/* ===================== AI 数据存取 ===================== */
 CentralManager.prototype.loadAIDBFromFile = function () {
   return new Promise((resolve) => {
     try {
@@ -1805,6 +1904,8 @@ CentralManager.prototype.testNodeMultiMetrics = async function (node) {
 /* ===================== 主流程入口 ===================== */
 function main(config) {
   const centralManager = CentralManager.getInstance();
+  // 可选：运行轻量自检（生产中不建议开启）
+  // centralManager.selfTest();
   return centralManager.processConfiguration(config);
 }
 
