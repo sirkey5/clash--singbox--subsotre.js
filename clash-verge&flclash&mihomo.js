@@ -171,8 +171,22 @@ const Utils = {
   },
 
   isValidDomain(d) { return typeof d === "string" && /^[a-zA-Z0-9.-]+$/.test(d) && !d.startsWith(".") && !d.endsWith(".") && !d.includes(".."); },
-  isIPv4(ip) { return typeof ip === "string" && /^(\d{1,3}\.){3}\d{1,3}$/.test(ip); },
-  isLoopbackOrLocal(ip) { return ip === "127.0.0.1" || ip === "0.0.0.0"; },
+  isIPv4(ip) {
+    if (typeof ip !== "string") return false;
+    if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) return false;
+    const parts = ip.split(".");
+    for (let i = 0; i < parts.length; i++) {
+      const n = Number(parts[i]);
+      if (!Number.isInteger(n) || n < 0 || n > 255) return false;
+    }
+    return true;
+  },
+  isLoopbackOrLocal(ip) {
+    if (typeof ip !== "string") return false;
+    if (ip === "localhost") return true;
+    if (!Utils.isIPv4(ip)) return false;
+    return ip === "127.0.0.1" || ip === "0.0.0.0";
+  },
   isPrivateIP(ip) {
     if (!Utils.isIPv4(ip)) return false;
     try {
@@ -210,7 +224,8 @@ const Utils = {
       if (!CONSTANTS.SAFE_PORTS.has(port)) return null;
 
       const host = url.hostname;
-      if (Utils.isIPv4(host) && (Utils.isPrivateIP(host) || Utils.isLoopbackOrLocal(host))) return null;
+      if (Utils.isLoopbackOrLocal(host)) return null;
+      if (Utils.isIPv4(host) && Utils.isPrivateIP(host)) return null;
 
       if (scheme === "http" && !Utils.isPrivateIP(host) && !Utils.isLoopbackOrLocal(host)) {
         url.protocol = "https:"; if (!url.port || url.port === "80") url.port = "443";
@@ -674,10 +689,18 @@ class CentralManager extends EventEmitter {
     this.metricsManager = new MetricsManager(this.state); this.availabilityTracker = new AvailabilityTracker(this.state, this.nodeManager);
     this.throughputEstimator = new ThroughputEstimator(); this.regionAutoManager = new RegionAutoManager();
     this.adBlockManager = new AdBlockManager(this); this.nodePools = new NodePools();
-    /** 区域候选缓存（按目标区域名缓存过滤结果，配置变化时清空） */
     this._regionPreferredCache = new Map();
-    /** 路由选择缓存开关（命中后直接返回已选节点，减少排序开销） */
     this._dispatchCacheEnabled = true;
+    this.runtimeSwitches = {
+      smartConfigEnabled: !!(Config && Config.enable !== false),
+      geoExternalLookup: null,
+      systemDnsOnly: null,
+      githubMirror: null,
+      preheatEnabled: Config?.tuning?.preheatEnabled !== false,
+      dispatchCacheEnabled: true,
+      lastAdjustTs: 0
+    };
+    this._switchTimerId = null;
     this._boundSystemListeners = null; this._listenersRegistered = false; CentralManager.instance = this;
     Promise.resolve().then(() => this.initialize().catch(err => Logger.error("Central.init", err?.stack || err)));
   }
@@ -706,7 +729,74 @@ class CentralManager extends EventEmitter {
     __runtimeCache.fetch = _fetch; __runtimeCache.AbortController = _AbortController;
     return { _fetch, _AbortController };
   }
-  isGeoExternalLookupEnabled() { return !!(Config?.privacy && Config.privacy.geoExternalLookup === true); }
+
+  _autoAdjustSwitches(trigger) {
+    try {
+      const now = Utils.now();
+      const rs = this.runtimeSwitches || (this.runtimeSwitches = {
+        smartConfigEnabled: !!(Config && Config.enable !== false),
+        geoExternalLookup: null,
+        systemDnsOnly: null,
+        githubMirror: null,
+        preheatEnabled: Config?.tuning?.preheatEnabled !== false,
+        dispatchCacheEnabled: true,
+        lastAdjustTs: 0
+      });
+      if (rs.lastAdjustTs && (now - rs.lastAdjustTs) < CONSTANTS.MIN_SWITCH_COOLDOWN) return;
+      rs.lastAdjustTs = now;
+
+      const successRate = Number(this.successTracker?.rate || 0);
+      const avgLatency = Number(this.stats?.average || 0);
+      const highLatency = avgLatency > CONSTANTS.LATENCY_CLAMP_MS * 1.5;
+      const badSuccess = successRate > 0 && successRate < CONSTANTS.AVAILABILITY_MIN_RATE;
+      const hasTrustedGeo = Array.isArray(Config?.privacy?.trustedGeoEndpoints) && Config.privacy.trustedGeoEndpoints.length > 0;
+
+      if (hasTrustedGeo && !badSuccess && !highLatency) rs.geoExternalLookup = true;
+      else rs.geoExternalLookup = false;
+
+      if (Config?.privacy?.systemDnsOnly === true && badSuccess && highLatency) rs.systemDnsOnly = false;
+      else rs.systemDnsOnly = Config?.privacy?.systemDnsOnly === true;
+
+      if (Config?.privacy?.githubMirrorEnabled) rs.githubMirror = !highLatency;
+      else rs.githubMirror = false;
+
+      if (trigger === "networkOnline" || trigger === "init") rs.preheatEnabled = Config?.tuning?.preheatEnabled !== false;
+      rs.dispatchCacheEnabled = !(badSuccess && highLatency);
+      rs.smartConfigEnabled = !!(Config && Config.enable !== false);
+      this.runtimeSwitches = rs;
+    } catch (e) { Logger.debug("Central.autoSwitch", e?.message || e); }
+  }
+
+  isSmartConfigEnabled() {
+    const v = this.runtimeSwitches?.smartConfigEnabled;
+    if (typeof v === "boolean") return v;
+    return !!(Config && Config.enable !== false);
+  }
+  isDispatchCacheEnabled() {
+    const v = this.runtimeSwitches?.dispatchCacheEnabled;
+    if (typeof v === "boolean") return v;
+    return this._dispatchCacheEnabled !== false;
+  }
+  isPreheatEnabled() {
+    const v = this.runtimeSwitches?.preheatEnabled;
+    if (typeof v === "boolean") return v;
+    return Config?.tuning?.preheatEnabled !== false;
+  }
+  isGithubMirrorEnabled() {
+    const v = this.runtimeSwitches?.githubMirror;
+    if (typeof v === "boolean") return v;
+    return !!(Config?.privacy?.githubMirrorEnabled);
+  }
+  isSystemDnsOnly() {
+    const v = this.runtimeSwitches?.systemDnsOnly;
+    if (typeof v === "boolean") return v;
+    return !!(Config?.privacy?.systemDnsOnly);
+  }
+  isGeoExternalLookupEnabled() {
+    const v = this.runtimeSwitches?.geoExternalLookup;
+    if (typeof v === "boolean") return v;
+    return !!(Config?.privacy && Config.privacy.geoExternalLookup === true);
+  }
 
   _nodeTimeout() { const t = Config?.tuning?.nodeTestTimeoutMs; return Number.isFinite(t) && t > 0 ? t : CONSTANTS.NODE_TEST_TIMEOUT; }
   _nodeAttempts() { const a = Config?.tuning?.nodeTestMaxAttempts; return Number.isFinite(a) && a > 0 ? a : CONSTANTS.MAX_RETRY_ATTEMPTS; }
@@ -725,7 +815,7 @@ class CentralManager extends EventEmitter {
     url = initial;
     const { _fetch, _AbortController } = await this._getFetchRuntime(); if (!_fetch) throw new Error("fetch 不可用于当前运行环境");
 
-    if (Config.privacy?.githubMirrorEnabled && (url.startsWith("https://raw.githubusercontent.com/") || url.startsWith("https://github.com/"))) {
+    if (this.isGithubMirrorEnabled() && (url.startsWith("https://raw.githubusercontent.com/") || url.startsWith("https://github.com/"))) {
       try { const best = await selectBestMirror(_fetch); GH_PROXY_PREFIX = best || ""; url = `${GH_PROXY_PREFIX}${url}`; }
       catch (e) { Logger.warn("GH._safeFetch", e?.message || e); }
     }
@@ -760,13 +850,22 @@ class CentralManager extends EventEmitter {
   }
 
   async initialize() {
-    try { const { _fetch } = await this._getFetchRuntime(); if (_fetch && Config.privacy?.githubMirrorEnabled) await selectBestMirror(_fetch); }
+    try { const { _fetch } = await this._getFetchRuntime(); if (_fetch && this.isGithubMirrorEnabled()) await selectBestMirror(_fetch); }
     catch (e) { Logger.warn("Central.init", e?.message || e); }
     await this.loadAIDBFromFile().catch(err => Logger.warn("Central.loadAI", err?.message || err));
     this._registerEvents();
     this.on("requestDetected", (ip) => this.handleRequestWithGeoRouting(ip).catch(err => Logger.warn("Central.geoRouting", err?.message || err)));
-    if (Config?.tuning?.preheatEnabled !== false) this.preheatNodes().catch(err => Logger.warn("Central.preheat", err?.message || err));
+    if (this.isPreheatEnabled()) this.preheatNodes().catch(err => Logger.warn("Central.preheat", err?.message || err));
     try { await this.adBlockManager.updateIfNeeded(); } catch (e) { Logger.warn("Central.adBlockInit", e?.message || e); }
+
+    try {
+      if (typeof setInterval === "function") {
+        const interval = CONSTANTS.MIN_SWITCH_COOLDOWN;
+        this._switchTimerId = setInterval(() => {
+          try { this._autoAdjustSwitches("timer"); } catch (e) { Logger.warn("Central.autoSwitch.timer", e?.message || e); }
+        }, interval);
+      }
+    } catch (e) { Logger.warn("Central.autoSwitch.timerReg", e?.message || e); }
 
     try {
       if (PLATFORM.isNode && process.on) {
@@ -777,12 +876,19 @@ class CentralManager extends EventEmitter {
       }
     } catch (e) { Logger.warn("Central.cleanupReg", e?.message || e); }
 
+    this._autoAdjustSwitches("init");
     Logger.info("Central.init", "初始化完成");
   }
   async destroy() {
     Logger.info("Central.destroy", "开始清理资源...");
     try { this._unregisterEvents(); } catch (e) { Logger.warn("Central.destroy", e?.message || e); }
     try { await this.saveAIDBToFile(); } catch (e) { Logger.warn("Central.saveAI", e?.message || e); }
+    try {
+      if (this._switchTimerId && typeof clearInterval === "function") {
+        clearInterval(this._switchTimerId);
+        this._switchTimerId = null;
+      }
+    } catch (e) { Logger.warn("Central.destroy", e?.message || e); }
     try { this.lruCache?.clear(); this.geoInfoCache?.clear(); this.nodePools?.clear?.(); } catch (e) { Logger.warn("Central.clearCache", e?.message || e); }
     Logger.info("Central.destroy", "资源清理完成");
   }
@@ -811,7 +917,7 @@ class CentralManager extends EventEmitter {
 
   onNodeUpdate(id, status) { this.nodeManager.updateNodeQuality(id, status.score || 0); }
   async onConfigChanged() { Logger.info("Central.onConfigChanged", "配置变更，触发节点评估..."); await this.evaluateAllNodes(); }
-  async onNetworkOnline() { Logger.info("Central.onNetworkOnline", "网络恢复，触发节点评估..."); await this.evaluateAllNodes(); }
+  async onNetworkOnline() { Logger.info("Central.onNetworkOnline", "网络恢复，触发节点评估..."); await this.evaluateAllNodes(); this._autoAdjustSwitches("networkOnline"); }
   async onPerformanceThresholdBreached(nodeId) {
     Logger.info("Central.onThreshold", `节点 ${nodeId} 性能阈值突破，触发单节点评估...`);
     const node = this.state.config.proxies?.find(n => n?.id === nodeId);
@@ -1012,7 +1118,7 @@ class CentralManager extends EventEmitter {
     let targetGeo = null;
     try {
       if (hostname && Utils.isValidDomain(hostname)) {
-        if (Config.privacy?.systemDnsOnly) { targetGeo = this._getFallbackGeoInfo(hostname); }
+        if (this.isSystemDnsOnly()) { targetGeo = this._getFallbackGeoInfo(hostname); }
         else {
           const targetIP = await this.resolveDomainToIP(hostname);
           if (targetIP) targetGeo = this.isGeoExternalLookupEnabled() ? await this.getGeoInfo(targetIP) : this._getFallbackGeoInfo(hostname);
@@ -1026,7 +1132,7 @@ class CentralManager extends EventEmitter {
 
     // 路由选择缓存命中则直接返回，避免重复排序计算
     try {
-      if (this._dispatchCacheEnabled) {
+      if (this.isDispatchCacheEnabled()) {
         const cacheKey = `${typeof reqCtx.user === "string" ? reqCtx.user : "default"}:${clientGeo?.country || "unknown"}:${hostname || "unknown"}`;
         const cachedId = this.lruCache.get(cacheKey);
         if (cachedId && !this.nodeManager.isInCooldown(cachedId)) {
@@ -1199,7 +1305,7 @@ class CentralManager extends EventEmitter {
 
   async resolveDomainToIP(domain) {
     if (!Utils.isValidDomain(domain)) { Logger.error("Central.dns", `无效的域名参数或格式: ${domain}`); return null; }
-    if (Config.privacy?.systemDnsOnly) return null;
+    if (this.isSystemDnsOnly()) return null;
     const cacheKey = `dns:${domain}`; const cachedIP = this.lruCache.get(cacheKey); if (cachedIP) return cachedIP;
     const doh = ["https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query", "https://9.9.9.9/dns-query"];
     try {
@@ -1256,6 +1362,7 @@ class CentralManager extends EventEmitter {
     const avail = Number(st.availabilityRate) || 0;
     const score = Number(st.score) || 0;
     this.nodePools.classify(node.id, score, avail);
+    try { this._autoAdjustSwitches("metrics"); } catch (e) { Logger.debug("Central.autoSwitch.metrics", e?.message || e); }
   }
 
   aiScoreNode(node, metrics) {
@@ -1360,7 +1467,7 @@ class CentralManager extends EventEmitter {
       if (Config?.dns && typeof Config.dns === "object") safe.dns = Config.dns;
     } catch (e) { Logger.warn("Central.applySystem", e.message); }
 
-    if (!Config || !Config.enable) { Logger.info("Central.processConfig", "配置处理已禁用，返回原始配置"); return safe; }
+    if (!this.isSmartConfigEnabled()) { Logger.info("Central.processConfig", "配置处理已禁用，返回原始配置"); return safe; }
 
     // 自动发现区域
     try {
@@ -1470,7 +1577,8 @@ class AvailabilityTracker {
 }
 class ThroughputEstimator {
   async tcpConnectLatency(host, port, timeout) {
-    if (!PLATFORM.isNode) throw new Error("Not Node"); const net = require("net");
+    if (!PLATFORM.isNode) throw new Error("当前运行环境非Node，无法执行TCP连通性测试");
+    const net = require("net");
     return new Promise((resolve, reject) => {
       const start = Utils.now(); const socket = new net.Socket(); let done = false;
       const cleanup = (err) => { if (done) return; done = true; try { socket.destroy(); } catch {} if (err) reject(err); else resolve(Utils.now() - start); };
