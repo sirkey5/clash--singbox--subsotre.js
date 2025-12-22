@@ -136,14 +136,14 @@ const DataMasker = {
     try {
       // 处理 IPv4
       let masked = ip.replace(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.)\d{1,3}\b/g, '$1***');
-      // 处理 IPv6（简化版，隐藏最后一段）
-      masked = masked.replace(/(([0-9a-fA-F]{1,4}:){7})[0-9a-fA-F]{1,4}/g, '$1****');
+      // 处理 IPv6（增强版，隐藏更多地址段）
+      // 隐藏后4组IPv6地址段
+      masked = masked.replace(/([0-9a-fA-F]{1,4}:){4}[0-9a-fA-F]{1,4}:[0-9a-fA-F]{1,4}:[0-9a-fA-F]{1,4}:[0-9a-fA-F]{1,4}/g, '$1****:****:****:****');
       return masked;
     } catch {
       return ip;
     }
-  },
-  
+  },  
   // 递归脱敏对象中的敏感信息
   maskObject: (obj, depth = 0, maxDepth = 5) => {
     if (depth > maxDepth) return '[MAX_DEPTH_REACHED]';
@@ -554,9 +554,7 @@ const Utils = {
       if (estBytes > CONSTANTS.DATA_URL_MAX_BYTES) throw new Error("data-url 超出大小限制");
       return `${CONSTANTS.DATA_URL_PREFIX}${base64}`;
     } catch { return ""; }
-  },
-
-  // 修复：添加缺失的 safeSet 方法
+  },  // 修复：添加缺失的 safeSet 方法
   safeSet: (obj, key, val) => {
     if (obj && typeof obj === "object") {
       obj[key] = val;
@@ -624,8 +622,8 @@ async function selectBestMirror(runtimeFetch) {
       }
     })()));
 
-    if (!resolved) chosen = ghCurrentMirror || "";
-    ghCurrentMirror = chosen;
+    // 修复：当没有找到更好的镜像时，保持当前有效的镜像
+    if (!resolved && chosen === "") chosen = ghCurrentMirror || "";    ghCurrentMirror = chosen;
     ghLastProbeTimestamp = now;
     GH_PROXY_PREFIX = chosen;
     return chosen;
@@ -1751,17 +1749,20 @@ class NodePools {
   }
   
   // 同步环形缓冲区到数组（保持向后兼容）
+  // 优化：只在必要时更新数组，避免不必要的重建
   _syncBuffersToArrays() {
-    this.recentScores = [];
-    this.recentAvail = [];
-    
-    for (let i = 0; i < this._bufferCount; i++) {
-      const idx = (this._bufferIndex - this._bufferCount + i + CONSTANTS.POOL_WINDOW_SIZE) % CONSTANTS.POOL_WINDOW_SIZE;
-      if (this._scoreBuffer[idx] !== null) this.recentScores.push(this._scoreBuffer[idx]);
-      if (this._availBuffer[idx] !== null) this.recentAvail.push(this._availBuffer[idx]);
+    // 只在缓冲区计数与数组长度不匹配时更新数组
+    if (this._bufferCount !== this.recentScores.length + this.recentAvail.length) {
+      this.recentScores = [];
+      this.recentAvail = [];
+      
+      for (let i = 0; i < this._bufferCount; i++) {
+        const idx = (this._bufferIndex - this._bufferCount + i + CONSTANTS.POOL_WINDOW_SIZE) % CONSTANTS.POOL_WINDOW_SIZE;
+        if (this._scoreBuffer[idx] !== null) this.recentScores.push(this._scoreBuffer[idx]);
+        if (this._availBuffer[idx] !== null) this.recentAvail.push(this._availBuffer[idx]);
+      }
     }
   }
-
   getAdaptiveThresholds() {
     const enough = (this.recentScores.length >= CONSTANTS.MIN_POOL_ITEMS_FOR_ADAPT) && 
                    (this.recentAvail.length >= CONSTANTS.MIN_POOL_ITEMS_FOR_ADAPT);
