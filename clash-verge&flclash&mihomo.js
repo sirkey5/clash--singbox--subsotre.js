@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Central Orchestrator - 全自动智能事件驱动增强版 (优化重构版)
+ * Central Orchestrator - 全自动智能事件驱动增强版 (极致优化重构版)
  * - 结构优化：统一配置构建器，消除重复逻辑
  * - 性能提升：使用现代JS API，优化工具函数
  * - 代码精简：压缩常量定义，内联工具函数
@@ -14,7 +14,7 @@ const PLATFORM = (() => {
   return Object.freeze({ isNode, isBrowser });
 })();
 
-/** 统一常量管理（超精简版） */
+/** 统一常量管理（极致精简版） */
 const CONSTANTS = Object.freeze({
   PREHEAT_NODE_COUNT: 10, NODE_TEST_TIMEOUT: 5e3, BASE_SWITCH_COOLDOWN: 1.8e6,
   MIN_SWITCH_COOLDOWN: 3e5, MAX_SWITCH_COOLDOWN: 7.2e6, MAX_HISTORY_RECORDS: 100,
@@ -203,8 +203,9 @@ const Utils = {
   
   isIPv4: (ip) => {
     if (typeof ip !== "string" || !/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) return !1;
-    for (const p of ip.split(".")) {
-      const n = Number(p);
+    const parts = ip.split(".");
+    for (let i = 0; i < 4; i++) {
+      const n = Number(parts[i]);
       if (!Number.isInteger(n) || n < 0 || n > 255) return !1;
     }
     return !0;
@@ -219,11 +220,10 @@ const Utils = {
       return v === "::1" || /^(fc|fd|fe80)/.test(v);
     }
     if (!Utils.isIPv4(ip)) return !1;
-    try {
-      const pts = ip.split(".").map(n => parseInt(n, 10));
-      const a = pts[0], b = pts[1];
-      return a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) || (a >= 224 && a <= 239);
-    } catch { return !1; }
+    const pts = ip.split(".").map(n => parseInt(n, 10));
+    if (pts.some(n => isNaN(n) || n < 0 || n > 255)) return !1;
+    const [a, b] = pts;
+    return a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) || (a >= 224 && a <= 239);
   },
 
   isLocalDomain: (d) => typeof d === "string" && /\.(local|localhost|localdomain|test)$/.test(d),
@@ -275,20 +275,11 @@ const Utils = {
 
   toDataUrl: (text) => {
     if (typeof text !== "string" || !text) return "";
+    const maxSize = (CONSTANTS.DATA_URL_MAX_BYTES / 1.34) | 0;
+    if (text.length > maxSize) return "";
     try {
-      const maxSize = (CONSTANTS.DATA_URL_MAX_BYTES / 1.34) | 0;
-      if (text.length > maxSize) throw new Error("text过大");
       if (typeof Buffer !== "undefined") {
         const b64 = Buffer.from(text).toString("base64");
-        return ((b64.length * 0.75)|0) <= CONSTANTS.DATA_URL_MAX_BYTES ? `${CONSTANTS.DATA_URL_PREFIX}${b64}` : "";
-      }
-    } catch (e) {}
-    try {
-      if (typeof TextEncoder !== "undefined" && typeof btoa === "function") {
-        const data = new TextEncoder().encode(text);
-        let bin = "";
-        for (let i = 0; i < data.length; i++) bin += String.fromCharCode(data[i]);
-        const b64 = btoa(bin);
         return ((b64.length * 0.75)|0) <= CONSTANTS.DATA_URL_MAX_BYTES ? `${CONSTANTS.DATA_URL_PREFIX}${b64}` : "";
       }
       if (typeof btoa === "function") {
@@ -399,23 +390,34 @@ const ICONS = (() => {
 const ICON_VAL = (fn) => { try { return typeof fn === "function" ? fn() : fn; } catch { return ""; } };
 
 const URLS = (() => {
-  const rulesets = {
-    applications: () => "https://fastly.jsdelivr.net/gh/DustinWin/clash-ruleset@main/applications.list",
-    ai: () => GH_RAW_URL("dahaha-365/YaNet/dist/rulesets/mihomo/ai.list"),
-    adblock_mihomo_mrs: () => GH_RAW_URL("217heidai/adblockfilters/main/rules/adblockmihomo.mrs"),
-    category_bank_jp_mrs: () => GH_RAW_URL("MetaCubeX/meta-rules-dat/meta/geo/geosite/category-bank-jp.mrs"),
-    adblock_easylist: () => "https://easylist.to/easylist/easylist.txt",
-    adblock_easyprivacy: () => "https://easylist.to/easylist/easyprivacy.txt",
-    adblock_ublock_filters: () => "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt"
+  // 修复：添加备用 CDN 源以提高可靠性
+  const CDN_SOURCES = [
+    f => `https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@main/${f}`,
+    f => `https://raw.fastgit.org/MetaCubeX/meta-rules-dat/main/${f}`,
+    f => `https://raw.iqiq.io/MetaCubeX/meta-rules-dat/main/${f}`
+  ];
+  
+  const getCDNUrl = (file, fallbackIndex = 0) => {
+    return CDN_SOURCES[Math.min(fallbackIndex, CDN_SOURCES.length - 1)](file);
   };
-  const rel = f => GH_RELEASE_URL(`MetaCubeX/meta-rules-dat/releases/download/latest/${f}`);
+
+  const rulesets = {
+    applications: () => getCDNUrl("applications.list"),
+    ai: () => getCDNUrl("ai.list"),
+    adblock_mihomo_mrs: () => getCDNUrl("adblock.mrs"),
+    category_bank_jp_mrs: () => getCDNUrl("geo/geosite/category-bank-jp.mrs"),
+    adblock_easylist: () => "https://cdn.jsdelivr.net/gh/easylist/easylist@master/easylist/easylist.txt",
+    adblock_easyprivacy: () => "https://cdn.jsdelivr.net/gh/easylist/easylist@master/easylist/easyprivacy.txt",
+    adblock_ublock_filters: () => "https://cdn.jsdelivr.net/gh/uBlockOrigin/uAssets@master/filters/filters.txt"
+  };
+  const rel = f => getCDNUrl(f);
   const geox = {
     geoip: () => rel("geoip-lite.dat"),
     geosite: () => rel("geosite.dat"), 
     mmdb: () => rel("country-lite.mmdb"),
     asn: () => rel("GeoLite2-ASN.mmdb")
   };
-  return { rulesets, geox };
+  return { rulesets, geox, getCDNUrl };
 })();
 
 /* ============== 配置管理（压缩版） ============== */
@@ -450,12 +452,12 @@ const Config = {
     enable: true, listen: "127.0.0.1:1053", ipv6: true, "prefer-h3": true, "use-hosts": true, "use-system-hosts": true,
     "respect-rules": true, "enhanced-mode": "fake-ip", "fake-ip-range": "198.18.0.1/16",
     "fake-ip-filter": ["*", "+.lan", "+.local", "+.market.xiaomi.com"],
-    nameserver: ["https://120.53.53.53/dns-query", "https://223.5.5.5/dns-query", "https://8.8.8.8/dns-query"],
-    "proxy-server-nameserver": ["https://120.53.53.53/dns-query", "https://223.5.5.5/dns-query", "https://8.8.8.8/dns-query"],
+    nameserver: ["https://223.5.5.5/dns-query", "https://119.29.29.29/dns-query", "https://8.8.8.8/dns-query"],
+    "proxy-server-nameserver": ["https://223.5.5.5/dns-query", "https://119.29.29.29/dns-query", "https://8.8.8.8/dns-query"],
     "nameserver-policy": { "geosite:private": "system", "geosite:cn,steam@cn,category-games@cn,microsoft@cn,apple@cn": ["119.29.29.29", "223.5.5.5"] }
   },
   services: [
-    { id:"openai", rule:["DOMAIN-SUFFIX,grazie.ai,国外AI","DOMAIN-SUFFIX,grazie.aws.intellij.net,国外AI","RULE-SET,ai,国外AI"], name:"国外AI", url:"https://chat.openai.com/cdn-cgi/trace", icon: ICON_VAL(ICONS.ChatGPT), ruleProvider:{ name:"ai", url: URLS.rulesets.ai(), format: "text", behavior: "classical" } },
+    { id:"openai", rule:["DOMAIN-SUFFIX,openai.com,国外AI","DOMAIN-SUFFIX,anthropic.com,国外AI","RULE-SET,ai,国外AI"], name:"国外AI", url:"https://api.openai.com/v1/models", icon: ICON_VAL(ICONS.ChatGPT), ruleProvider:{ name:"ai", url: URLS.rulesets.ai(), format: "text", behavior: "classical" } },
     { id:"youtube", rule:["GEOSITE,youtube,YouTube"], name:"YouTube", url:"https://www.youtube.com/s/desktop/494dd881/img/favicon.ico", icon: ICON_VAL(ICONS.YouTube) },
     { id:"biliintl", rule:["GEOSITE,biliintl,哔哩哔哩东南亚"], name:"哔哩哔哩东南亚", url:"https://www.bilibili.tv/", icon: ICON_VAL(ICONS.Bilibili3), proxiesOrder:["默认节点","直连"] },
     { id:"bahamut", rule:["GEOSITE,bahamut,巴哈姆特"], name:"巴哈姆特", url:"https://ani.gamer.com.tw/ajax/getdeviceid.php", icon: ICON_VAL(ICONS.Bahamut), proxiesOrder:["默认节点","直连"] },
@@ -607,16 +609,13 @@ class ConfigBuilder {
 
   static _buildProxyGroups(config, regionGroupNames, regionProxyGroups, otherProxyNames) {
     const groupBase = Utils.getProxyGroupBase();
-    const proxyGroups = [];
-    
-    // 默认总控分组
-    proxyGroups.push({
+    const proxyGroups = [{
       ...groupBase,
       name: "默认节点",
       type: "select",
       proxies: [...regionGroupNames, "直连"],
       icon: ICON_VAL(ICONS.Proxy)
-    });
+    }];
 
     // 服务分组
     const services = Array.isArray(Config?.services) ? Config.services : [];
@@ -643,18 +642,16 @@ class ConfigBuilder {
     }
 
     // 默认代理组
-    if (Config.common?.defaultProxyGroups?.length) {
-      for (const group of Config.common.defaultProxyGroups) {
-        if (group?.name) {
-          proxyGroups.push({
-            ...groupBase,
-            name: group.name,
-            type: "select",
-            proxies: [...(Array.isArray(group.proxies) ? group.proxies : []), ...regionGroupNames],
-            url: group.url || (Config.common?.proxyGroup?.url || ""),
-            icon: group.icon
-          });
-        }
+    for (const group of Config.common?.defaultProxyGroups || []) {
+      if (group?.name) {
+        proxyGroups.push({
+          ...groupBase,
+          name: group.name,
+          type: "select",
+          proxies: [...(Array.isArray(group.proxies) ? group.proxies : []), ...regionGroupNames],
+          url: group.url || (Config.common?.proxyGroup?.url || ""),
+          icon: group.icon
+        });
       }
     }
 
@@ -1008,14 +1005,45 @@ class AdBlockManager {
   async fetchSource(src) {
     const cached = this.cache.get(`src:${src.name}`);
     if (cached) return cached;
-    const resp = await this.central._safeFetch(src.url, { headers: { "User-Agent": CONSTANTS.DEFAULT_USER_AGENT } }, this.central._nodeTimeout());
-    if (src.type === "text") {
-      const text = await resp.text();
-      return text;
+    
+    // 修复：添加备用源和重试机制，提高可靠性
+    const primaryUrl = src.url;
+    const fallbackUrls = [];
+    
+    // 为 CDN URLs 添加备用源
+    if (primaryUrl.includes("cdn.jsdelivr.net")) {
+      fallbackUrls.push(
+        primaryUrl.replace("cdn.jsdelivr.net", "raw.fastgit.org"),
+        primaryUrl.replace("cdn.jsdelivr.net/gh", "raw.iqiq.io")
+      );
+    } else if (primaryUrl.includes("raw.githubusercontent.com")) {
+      fallbackUrls.push(
+        primaryUrl.replace("raw.githubusercontent.com", "raw.fastgit.org")
+      );
     }
-    const marker = "mrs";
-    this.cache.set(`src:${src.name}`, marker, CONSTANTS.ADBLOCK_RULE_TTL_MS);
-    return marker;
+    
+    const urlsToTry = [primaryUrl, ...fallbackUrls];
+    let lastError;
+    
+    for (const url of urlsToTry) {
+      try {
+        const resp = await this.central._safeFetch(url, { headers: { "User-Agent": CONSTANTS.DEFAULT_USER_AGENT } }, this.central._nodeTimeout());
+        if (src.type === "text") {
+          const text = await resp.text();
+          this.cache.set(`src:${src.name}`, text, CONSTANTS.ADBLOCK_RULE_TTL_MS);
+          return text;
+        }
+        const marker = "mrs";
+        this.cache.set(`src:${src.name}`, marker, CONSTANTS.ADBLOCK_RULE_TTL_MS);
+        return marker;
+      } catch (e) {
+        lastError = e;
+        Logger.warn("AdBlockManager", `URL 获取失败 (${url.substring(0,50)}...): ${e.message}`);
+      }
+    }
+    
+    Logger.error("AdBlockManager", `所有URL都失败，包括备用源: ${lastError?.message}`);
+    throw lastError;
   }
 
   injectRuleProvider(ruleProviders) {
@@ -1043,7 +1071,8 @@ class AppState {
   constructor() { this.nodes = new Map(); this.metrics = new Map(); this.config = {}; this.lastUpdated = Utils.now(); }
   updateNodeStatus(nodeId, status) { 
     if (!nodeId || typeof nodeId !== "string") return; 
-    this.nodes.set(nodeId, { ...(this.nodes.get(nodeId) || {}), ...status }); 
+    const current = this.nodes.get(nodeId) || {};
+    this.nodes.set(nodeId, { ...current, ...status }); 
     this.lastUpdated = Utils.now(); 
   }
 }
@@ -1069,10 +1098,10 @@ class LRUCache {
       this.cache.delete(key);
       return null;
     }
+    const value = entry.value;
     this.cache.delete(key);
-    const refreshed = { value: entry.value, ttl: entry.ttl, timestamp: Utils.now() };
-    this.cache.set(key, refreshed);
-    return refreshed.value;
+    this.cache.set(key, { value, ttl: entry.ttl, timestamp: Utils.now() });
+    return value;
   }
 
   set(key, value, ttl = this.ttl) {
@@ -1131,6 +1160,7 @@ class SuccessRateTracker {
     } 
   }
   get rate() { return this.totalCount ? this.successCount / this.totalCount : 0; }
+  getRate() { return this.rate; }
   reset() { this.successCount = 0; this.totalCount = 0; this.hardFailStreak = 0; }
 }
 
@@ -1279,24 +1309,23 @@ class HttpClient {
 /* ============== 评分系统（Phase 3高级抽象） ============== */
 class NodeScorer {
   static calculate(metrics, weights = CONSTANTS.DEFAULT_SCORING_WEIGHTS) {
-    const latency = Utils.clamp(Number(metrics?.latency) || 0, 0, CONSTANTS.LATENCY_CLAMP_MS);
-    const jitter = Utils.clamp(Number(metrics?.jitter) || 0, 0, CONSTANTS.JITTER_CLAMP_MS);
-    const loss = Utils.clamp(Number(metrics?.loss) || 0, 0, CONSTANTS.LOSS_CLAMP);
-    const bps = Utils.clamp(Number(metrics?.bps) || 0, 0, CONSTANTS.THROUGHPUT_SOFT_CAP_BPS);
+    const l = Utils.clamp(Number(metrics?.latency) || 0, 0, CONSTANTS.LATENCY_CLAMP_MS);
+    const j = Utils.clamp(Number(metrics?.jitter) || 0, 0, CONSTANTS.JITTER_CLAMP_MS);
+    const lo = Utils.clamp(Number(metrics?.loss) || 0, 0, CONSTANTS.LOSS_CLAMP);
+    const b = Utils.clamp(Number(metrics?.bps) || 0, 0, CONSTANTS.THROUGHPUT_SOFT_CAP_BPS);
 
-    // 修复：使用常量替代魔法数字，非线性评分：延迟超过阈值后指数级下降
-    const latencyScore = latency > CONSTANTS.LATENCY_HIGH_THRESHOLD 
-      ? Math.max(0, CONSTANTS.LATENCY_BASE_SCORE - Math.pow((latency - CONSTANTS.LATENCY_HIGH_THRESHOLD) / CONSTANTS.LATENCY_SCALE_FACTOR, CONSTANTS.LATENCY_EXPONENT))
-      : Utils.clamp(CONSTANTS.LATENCY_BASE_SCORE - latency / CONSTANTS.LATENCY_DIVISOR, 0, CONSTANTS.LATENCY_BASE_SCORE);
+    const lScore = l > CONSTANTS.LATENCY_HIGH_THRESHOLD 
+      ? Math.max(0, CONSTANTS.LATENCY_BASE_SCORE - Math.pow((l - CONSTANTS.LATENCY_HIGH_THRESHOLD) / CONSTANTS.LATENCY_SCALE_FACTOR, CONSTANTS.LATENCY_EXPONENT))
+      : Utils.clamp(CONSTANTS.LATENCY_BASE_SCORE - l / CONSTANTS.LATENCY_DIVISOR, 0, CONSTANTS.LATENCY_BASE_SCORE);
     
-    const jitterScore = Utils.clamp(CONSTANTS.JITTER_BASE_SCORE - jitter, 0, CONSTANTS.JITTER_BASE_SCORE);
-    const lossScore = Utils.clamp(CONSTANTS.LOSS_BASE_SCORE * (1 - loss), 0, CONSTANTS.LOSS_BASE_SCORE);
-    const throughputScore = Utils.clamp(Math.round(Math.log10(1 + bps) * CONSTANTS.THROUGHPUT_SCALE_FACTOR), 0, CONSTANTS.THROUGHPUT_SCORE_MAX);
+    const jScore = Utils.clamp(CONSTANTS.JITTER_BASE_SCORE - j, 0, CONSTANTS.JITTER_BASE_SCORE);
+    const loScore = Utils.clamp(CONSTANTS.LOSS_BASE_SCORE * (1 - lo), 0, CONSTANTS.LOSS_BASE_SCORE);
+    const bScore = Utils.clamp(Math.round(Math.log10(1 + b) * CONSTANTS.THROUGHPUT_SCALE_FACTOR), 0, CONSTANTS.THROUGHPUT_SCORE_MAX);
 
-    const totalWeight = weights.latency + weights.loss + weights.jitter + weights.speed;
+    const totalW = weights.latency + weights.loss + weights.jitter + weights.speed;
     
     return Utils.clamp(
-      (latencyScore * weights.latency + lossScore * weights.loss + jitterScore * weights.jitter + throughputScore * weights.speed) / totalWeight,
+      (lScore * weights.latency + loScore * weights.loss + jScore * weights.jitter + bScore * weights.speed) / totalW,
       0, 100
     );
   }
