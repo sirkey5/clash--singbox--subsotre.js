@@ -14,96 +14,33 @@ const PLATFORM = (() => {
   return Object.freeze({ isNode, isBrowser });
 })();
 
-/** 统一常量管理（压缩优化版） */
+/** 统一常量管理（超精简版） */
 const CONSTANTS = Object.freeze({
-  PREHEAT_NODE_COUNT: 10,
-  NODE_TEST_TIMEOUT: 5000,
-  BASE_SWITCH_COOLDOWN: 30 * 60 * 1000,
-  MIN_SWITCH_COOLDOWN: 5 * 60 * 1000,
-  MAX_SWITCH_COOLDOWN: 2 * 60 * 60 * 1000,
-  MAX_HISTORY_RECORDS: 100,
-  NODE_EVALUATION_THRESHOLD: 3 * 60 * 60 * 1000,
-  LRU_CACHE_MAX_SIZE: 1000,
-  LRU_CACHE_TTL: 3600000,
-  CONCURRENCY_LIMIT: 5,
-  MIN_SAMPLE_SIZE: 5,
-  GEO_FALLBACK_TTL: 3600000,
-  QUALITY_SCORE_THRESHOLD: 30,
-  NODE_CLEANUP_THRESHOLD: 20,
-  GEO_INFO_TIMEOUT: 3000,
-  FEATURE_WINDOW_SIZE: 50,
-  ENABLE_SCORE_DEBUGGING: false,
-
-  QUALITY_WEIGHT: 0.5,
-  METRIC_WEIGHT: 0.35,
-  SUCCESS_WEIGHT: 0.15,
-
-  CACHE_CLEANUP_THRESHOLD: 0.1,
-  CACHE_CLEANUP_BATCH_SIZE: 50,
-  MAX_RETRY_ATTEMPTS: 3,
-  RETRY_DELAY_BASE: 200,
-  MAX_RETRY_BACKOFF_MS: 5000,
-
-  DEFAULT_USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-  AVAILABILITY_MIN_RATE: 0.75,
-  AVAILABILITY_EMERGENCY_FAILS: 2,
-
-  THROUGHPUT_SOFT_CAP_BPS: 50_000_000,
-  THROUGHPUT_SCORE_MAX: 15,
-  LATENCY_CLAMP_MS: 3000,
-  JITTER_CLAMP_MS: 500,
-  LOSS_CLAMP: 1.0,
-
-  LARGE_PAYLOAD_THRESHOLD_BYTES: 512 * 1024,
-  STREAM_HINT_REGEX: /youtube|netflix|stream|video|live|hls|dash/i,
+  PREHEAT_NODE_COUNT: 10, NODE_TEST_TIMEOUT: 5e3, BASE_SWITCH_COOLDOWN: 1.8e6,
+  MIN_SWITCH_COOLDOWN: 3e5, MAX_SWITCH_COOLDOWN: 7.2e6, MAX_HISTORY_RECORDS: 100,
+  NODE_EVALUATION_THRESHOLD: 1.08e7, LRU_CACHE_MAX_SIZE: 1e3, LRU_CACHE_TTL: 3.6e6,
+  CONCURRENCY_LIMIT: 5, MIN_SAMPLE_SIZE: 5, GEO_FALLBACK_TTL: 3.6e6,
+  QUALITY_SCORE_THRESHOLD: 30, NODE_CLEANUP_THRESHOLD: 20, GEO_INFO_TIMEOUT: 3e3,
+  FEATURE_WINDOW_SIZE: 50, ENABLE_SCORE_DEBUGGING: !1, QUALITY_WEIGHT: .5,
+  METRIC_WEIGHT: .35, SUCCESS_WEIGHT: .15, CACHE_CLEANUP_THRESHOLD: .1,
+  CACHE_CLEANUP_BATCH_SIZE: 50, MAX_RETRY_ATTEMPTS: 3, RETRY_DELAY_BASE: 200,
+  MAX_RETRY_BACKOFF_MS: 5e3, DEFAULT_USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  AVAILABILITY_MIN_RATE: .75, AVAILABILITY_EMERGENCY_FAILS: 2, THROUGHPUT_SOFT_CAP_BPS: 5e7,
+  THROUGHPUT_SCORE_MAX: 15, LATENCY_CLAMP_MS: 3e3, JITTER_CLAMP_MS: 500,
+  LOSS_CLAMP: 1, LARGE_PAYLOAD_THRESHOLD_BYTES: 524288, STREAM_HINT_REGEX: /youtube|netflix|stream|video|live|hls|dash/i,
   AI_HINT_REGEX: /openai|claude|gemini|ai|chatgpt|api\.openai|anthropic|googleapis/i,
-  GAMING_PORTS: [3074, 27015, 27016, 27017, 27031, 27036, 5000, 5001],
-  TLS_PORTS: [443, 8443],
-  HTTP_PORTS: [80, 8080, 8880],
-
-  BIAS_AVAIL_BONUS_OK: 10,
-  BIAS_AVAIL_PENALTY_BAD: -30,
-  BIAS_LATENCY_MAX_BONUS: 15,
-  BIAS_JITTER_MAX_PENALTY: 10,
-
-  SAFE_PORTS: new Set([80, 443, 8080, 8081, 8088, 8880, 8443]),
-  ADBLOCK_UPDATE_INTERVAL_MS: 12 * 60 * 60 * 1000,
-  ADBLOCK_RULE_TTL_MS: 24 * 60 * 60 * 1000,
-
-  EARLY_SAMPLE_SCORE: 2,
-  POOL_WINDOW_SIZE: 100,
-  GOOD_PERCENTILE: 90,
-  BAD_PERCENTILE: 50,
-  ADAPT_ALPHA: 0.5,
-  MIN_POOL_ITEMS_FOR_ADAPT: 10,
-
-  DATA_URL_MAX_BYTES: 2 * 1024 * 1024,
-  DATA_URL_PREFIX: "data:text/plain;base64,",
-
-  // 修复：提取 ScoringStrategies 中的 Magic Numbers
-  VIDEO_STREAM_BONUS: 1,
-  
-  // 修复：asyncPool 中的魔法数字
-  ASYNC_POOL_MAX_CONCURRENCY: 50,
-  ASYNC_POOL_DEFAULT_LIMIT: 3,
-  
-  // 修复：NodeScorer 中的魔法数字
-  DEFAULT_SCORING_WEIGHTS: { latency: 0.4, loss: 0.3, jitter: 0.2, speed: 0.1 },
-  LATENCY_HIGH_THRESHOLD: 500,
-  LATENCY_BASE_SCORE: 35,
-  LATENCY_SCALE_FACTOR: 100,
-  LATENCY_EXPONENT: 1.5,
-  LATENCY_DIVISOR: 25,
-  JITTER_BASE_SCORE: 25,
-  LOSS_BASE_SCORE: 25,
-  THROUGHPUT_SCALE_FACTOR: 2,
-  
-  // 修复：AdBlockManager 中的魔法数字
-  ADBLOCK_BATCH_SIZE: 500,
-  ADBLOCK_CHUNK_SIZE: 50000,
-
-  // 修复：GitHub 镜像系统探测频率魔法数字
-  GH_PROBE_TTL: 10 * 60 * 1000
+  GAMING_PORTS: [3074,27015,27016,27017,27031,27036,5e3,5001], TLS_PORTS: [443,8443],
+  HTTP_PORTS: [80,8080,8880], BIAS_AVAIL_BONUS_OK: 10, BIAS_AVAIL_PENALTY_BAD: -30,
+  BIAS_LATENCY_MAX_BONUS: 15, BIAS_JITTER_MAX_PENALTY: 10,
+  SAFE_PORTS: new Set([80,443,8080,8081,8088,8880,8443]), ADBLOCK_UPDATE_INTERVAL_MS: 4.32e7,
+  ADBLOCK_RULE_TTL_MS: 8.64e7, EARLY_SAMPLE_SCORE: 2, POOL_WINDOW_SIZE: 100,
+  GOOD_PERCENTILE: 90, BAD_PERCENTILE: 50, ADAPT_ALPHA: .5, MIN_POOL_ITEMS_FOR_ADAPT: 10,
+  DATA_URL_MAX_BYTES: 2097152, DATA_URL_PREFIX: "data:text/plain;base64,",
+  VIDEO_STREAM_BONUS: 1, ASYNC_POOL_MAX_CONCURRENCY: 50, ASYNC_POOL_DEFAULT_LIMIT: 3,
+  DEFAULT_SCORING_WEIGHTS: {latency:.4,loss:.3,jitter:.2,speed:.1}, LATENCY_HIGH_THRESHOLD: 500,
+  LATENCY_BASE_SCORE: 35, LATENCY_SCALE_FACTOR: 100, LATENCY_EXPONENT: 1.5,
+  LATENCY_DIVISOR: 25, JITTER_BASE_SCORE: 25, LOSS_BASE_SCORE: 25, THROUGHPUT_SCALE_FACTOR: 2,
+  ADBLOCK_BATCH_SIZE: 500, ADBLOCK_CHUNK_SIZE: 5e4, GH_PROBE_TTL: 6e5
 });
 
 const ScoringStrategies = {
@@ -118,104 +55,56 @@ const ScoringStrategies = {
   }
 };
 
-// 修复：添加敏感信息脱敏工具
+// 修复：添加敏感信息脱敏工具（优化版）
 const DataMasker = {
-  // 修复：扩展敏感参数正则，增加更多常见敏感参数
+  _urlRegex: /([?&](token|key|auth|password|secret|access_token|api_key|session_id|credential|bearer|x-api-key|x-token|authorization)=)[^&]+/gi,
+  _ipv4Regex: /\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.)\d{1,3}\b/g,
+  _sensitiveKeyRegex: /password|token|key|secret|auth|credential|access|bearer|authorization/i,
+  
   maskUrl: (url) => {
     if (typeof url !== "string") return url;
-    try {
-      return url.replace(/([?&](token|key|auth|password|secret|access_token|api_key|session_id|credential)=)[^&]+/gi, '$1******');
-    } catch {
-      return url;
-    }
+    try { return url.replace(DataMasker._urlRegex, '$1***'); } catch { return url; }
   },
   
-  // 修复：增加 IPv6 脱敏处理
   maskIP: (ip) => {
     if (typeof ip !== "string") return ip;
     try {
-      // 处理 IPv4
-      let masked = ip.replace(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.)\d{1,3}\b/g, '$1***');
-      // 处理 IPv6（增强版，隐藏更多地址段）
-      // 隐藏后4组IPv6地址段
-      masked = masked.replace(/([0-9a-fA-F]{1,4}:){4}[0-9a-fA-F]{1,4}:[0-9a-fA-F]{1,4}:[0-9a-fA-F]{1,4}:[0-9a-fA-F]{1,4}/g, '$1****:****:****:****');
-      return masked;
-    } catch {
-      return ip;
-    }
-  },  
-  // 递归脱敏对象中的敏感信息
-  maskObject: (obj, depth = 0, maxDepth = 5) => {
-    if (depth > maxDepth) return '[MAX_DEPTH_REACHED]';
-    if (obj === null || typeof obj !== "object") return obj;
-    
-    const sensitiveKeys = /password|token|key|secret|auth|credential|access/i;
-    
-    if (Array.isArray(obj)) {
-      return obj.map(item => DataMasker.maskObject(item, depth + 1, maxDepth));
-    }
-    
-    const masked = {};
-    for (const key in obj) {
-      if (obj.hasOwnProperty(key)) {
-        if (sensitiveKeys.test(key)) {
-          masked[key] = '***MASKED***';
-        } else if (typeof obj[key] === 'string') {
-          masked[key] = DataMasker.maskUrl(DataMasker.maskIP(obj[key]));
-        } else {
-          masked[key] = DataMasker.maskObject(obj[key], depth + 1, maxDepth);
-        }
+      let m = ip.replace(DataMasker._ipv4Regex, '$1***');
+      return m.replace(/([0-9a-fA-F]{1,4}:){4}[0-9a-fA-F]{0,4}:[0-9a-fA-F]{0,4}:[0-9a-fA-F]{0,4}:[0-9a-fA-F]{0,4}/g, '****:****:****:****');
+    } catch { return ip; }
+  },
+  
+  maskObject: (obj, depth=0, maxDepth=3) => {
+    if (depth > maxDepth) return '[DEPTH]';
+    if (!obj || typeof obj !== "object") return obj;
+    if (Array.isArray(obj)) return obj.map(i => DataMasker.maskObject(i, depth+1, maxDepth));
+    const r = {};
+    for (const k in obj) {
+      if (!obj.hasOwnProperty(k)) continue;
+      if (DataMasker._sensitiveKeyRegex.test(k)) {
+        r[k] = '***';
+      } else {
+        const v = obj[k];
+        r[k] = typeof v === 'string' ? DataMasker.maskUrl(DataMasker.maskIP(v)) : DataMasker.maskObject(v, depth+1, maxDepth);
       }
     }
-    return masked;
+    return r;
   }
 };
 
-// 修复：提取私有日志函数，减少代码重复并增加脱敏
+// 修复：提取私有日志函数，减少代码重复（超精简版）
 const Logger = {
-  // 私有日志函数，统一处理逻辑，增加敏感信息脱敏
-  _log: (level, ctx, args, forceLog = false) => {
-    if (typeof console === "undefined") return;
-    if (level === "DEBUG" && !CONSTANTS.ENABLE_SCORE_DEBUGGING && !forceLog) return;
-    
-    const prefix = `[${level}]`;
-    const context = ctx || "-";
-    
-    // 修复：脱敏日志参数，防止敏感信息泄露
-    const sanitizedArgs = args.map(arg => {
-      if (typeof arg === "string") {
-        return DataMasker.maskUrl(DataMasker.maskIP(arg));
-      } else if (typeof arg === "object" && arg !== null) {
-        return DataMasker.maskObject(arg);
-      }
-      return arg;
-    });
-    
-    // 尝试使用对应级别的日志方法，回退到 log
-    const logMethod = console[level.toLowerCase()] || console.log;
-    if (typeof logMethod === "function") {
-      logMethod(prefix, context, ...sanitizedArgs);
-      return;
-    }
-    
-    // 最终回退到 console.log
-    if (typeof console.log === "function") {
-      console.log(prefix, context, ...sanitizedArgs);
-    }
+  _log: (level, ctx, args) => {
+    if (typeof console === "undefined" || (level === "DEBUG" && !CONSTANTS.ENABLE_SCORE_DEBUGGING)) return;
+    const prefix = `[${level}]`, context = ctx || "-";
+    const sanitized = args.map(a => typeof a === "string" ? DataMasker.maskUrl(DataMasker.maskIP(a)) : typeof a === "object" && a ? DataMasker.maskObject(a) : a);
+    const method = console[level.toLowerCase()] || console.log;
+    if (typeof method === "function") method(prefix, context, ...sanitized);
   },
-
-	error: (ctx, ...a) => {
-		Logger._log("ERROR", ctx, a);
-	},
-	info: (ctx, ...a) => {
-		Logger._log("INFO", ctx, a);
-	},
-	warn: (ctx, ...a) => {
-		Logger._log("WARN", ctx, a);
-	},
-	debug: (ctx, ...a) => {
-		Logger._log("DEBUG", ctx, a);
-	}
+  error: (c, ...a) => Logger._log("ERROR", c, a),
+  info: (c, ...a) => Logger._log("INFO", c, a),
+  warn: (c, ...a) => Logger._log("WARN", c, a),
+  debug: (c, ...a) => Logger._log("DEBUG", c, a)
 };
 
 class ConfigurationError extends Error { 
@@ -232,338 +121,189 @@ class InvalidRequestError extends Error {
   } 
 }
 
-/* ============== 优化工具集 ============== */
+/* ============== 优化工具集（精简版） ============== */
 const Utils = {
   now: () => Date.now(),
   clamp: (v, min, max) => Math.max(min, Math.min(max, v)),
   clamp01: (v) => Math.max(0, Math.min(1, v)),
-  sleep: (ms = 0) => new Promise(r => setTimeout(r, Math.max(0, ms | 0))),
+  sleep: (ms=0) => new Promise(r => setTimeout(r, Math.max(0, ms|0))),
   
-  // 修复：改进的深拷贝，支持循环引用和原型污染防护
   deepClone: (obj) => {
     if (typeof structuredClone === "function") {
-      try {
-        return structuredClone(obj);
-      } catch (e) {
-        // structuredClone 可能因循环引用失败，继续使用自定义实现
-      }
+      try { return structuredClone(obj); } catch (e) {}
     }
-    
-    // 修复：使用 WeakMap 处理循环引用，避免栈溢出
-    const cache = new WeakMap();
-    
-    // 递归深拷贝实现，支持 Set/Map 等复杂对象
-    const deepCloneImpl = (item) => {
+    const cache = typeof WeakMap !== "undefined" ? new WeakMap() : null;
+    const impl = (item) => {
       if (item === null || typeof item !== "object") return item;
       if (item instanceof Date) return new Date(item.getTime());
       if (item instanceof RegExp) return new RegExp(item.source, item.flags);
-      if (item instanceof Set) {
-        const cloned = new Set();
-        for (const value of item) cloned.add(deepCloneImpl(value));
-        return cloned;
-      }
-      if (item instanceof Map) {
-        const cloned = new Map();
-        for (const [key, value] of item) cloned.set(deepCloneImpl(key), deepCloneImpl(value));
-        return cloned;
-      }
-      if (Array.isArray(item)) {
-        return item.map(deepCloneImpl);
-      }
+      if (item instanceof Set) { const s = new Set(); for (const v of item) s.add(impl(v)); return s; }
+      if (item instanceof Map) { const m = new Map(); for (const [k,v] of item) m.set(impl(k), impl(v)); return m; }
+      if (Array.isArray(item)) return item.map(impl);
       if (typeof item === "object") {
-        // 修复：检查循环引用缓存
-        if (cache.has(item)) {
-          return cache.get(item);
+        if (cache && cache.has(item)) return cache.get(item);
+        const r = {}; 
+        if (cache) cache.set(item, r);
+        for (const k in item) {
+          if (!/^(__proto__|constructor|prototype)$/.test(k) && item.hasOwnProperty(k)) r[k] = impl(item[k]);
         }
-        
-        const cloned = {};
-        // 修复：缓存新对象以处理循环引用
-        cache.set(item, cloned);
-        
-        for (const key in item) {
-          // 修复：过滤危险键，防止原型污染
-          if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
-            continue;
-          }
-          if (item.hasOwnProperty(key)) {
-            cloned[key] = deepCloneImpl(item[key]);
-          }
-        }
-        return cloned;
+        return r;
       }
       return item;
     };
-    
-    try {
-      return deepCloneImpl(obj);
-    } catch (e) {
-      // 修复：增强特殊对象的 JSON 回退处理
-      try {
-        return JSON.parse(JSON.stringify(obj, (key, value) => {
-          if (value instanceof RegExp) {
-            return { __type: 'RegExp', source: value.source, flags: value.flags };
-          }
-          if (value instanceof Map) {
-            return { __type: 'Map', entries: Array.from(value.entries()) };
-          }
-          if (value instanceof Set) {
-            return { __type: 'Set', values: Array.from(value.values()) };
-          }
-          return value;
-        }), (key, value) => {
-          if (value?.__type === 'RegExp') {
-            return new RegExp(value.source, value.flags);
-          }
-          if (value?.__type === 'Map') {
-            return new Map(value.entries);
-          }
-          if (value?.__type === 'Set') {
-            return new Set(value.values);
-          }
-          return value;
-        });
-      } catch {
-        return obj; // 最后回退：返回原对象
-      }
+    try { return impl(obj); } catch (e) {
+      try { return JSON.parse(JSON.stringify(obj)); } catch { return obj; }
     }
   },
 
-  // 修复：优化并发池实现，改用数组管理并跟踪索引，减少集合操作开销
-  async asyncPool(tasks, limit = CONSTANTS.CONCURRENCY_LIMIT) {
+  async asyncPool(tasks, limit=CONSTANTS.CONCURRENCY_LIMIT) {
     const list = Array.isArray(tasks) ? tasks.filter(f => typeof f === "function") : [];
     if (!list.length) return [];
-    
-    const maxConcurrency = Math.max(1, Math.min(CONSTANTS.ASYNC_POOL_MAX_CONCURRENCY, Math.floor(limit) || CONSTANTS.ASYNC_POOL_DEFAULT_LIMIT));
+    const maxC = Math.max(1, Math.min(CONSTANTS.ASYNC_POOL_MAX_CONCURRENCY, (limit|0) || CONSTANTS.ASYNC_POOL_DEFAULT_LIMIT));
     const results = new Array(list.length);
-    const executing = []; 
-    let index = 0;
+    const exec = new Set();
+    let idx = 0;
 
     const runTask = async (i) => {
-      try {
-        results[i] = await list[i]();
-      } catch (error) {
-        results[i] = { 
-          __error: error?.message || "任务执行失败", 
-          __index: i,
-          __originalError: error 
-        };
+      try { results[i] = await list[i](); } catch (e) {
+        results[i] = { __error: e?.message || "失败", __index: i, __err: e };
       } finally {
-        // 移除完成的任务索引
-        const pos = executing.indexOf(i);
-        if (pos > -1) executing.splice(pos, 1);
-        // 继续执行剩余任务
-        if (index < list.length) {
-          const nextIndex = index++;
-          executing.push(nextIndex);
-          await runTask(nextIndex);
+        exec.delete(i);
+        if (idx < list.length) {
+          const ni = idx++;
+          exec.add(ni);
+          await runTask(ni);
         }
       }
     };
 
-    // 启动初始任务
-    const initial = Math.min(maxConcurrency, list.length);
-    const promises = [];
-    for (; index < initial; index++) {
-      executing.push(index);
-      promises.push(runTask(index));
+    const ps = [];
+    for (; idx < Math.min(maxC, list.length); idx++) {
+      exec.add(idx);
+      ps.push(runTask(idx));
     }
-
-    // 等待所有任务完成。由于 runTask 会递归调用自身，我们只需等待初始启动的任务完成
-    await Promise.all(promises);
-    
+    await Promise.all(ps);
     return results;
   },
 
-  // 指数退避重试（保持原有逻辑）
-  async retry(fn, attempts = CONSTANTS.MAX_RETRY_ATTEMPTS, delay = CONSTANTS.RETRY_DELAY_BASE) {
-    const maxA = Math.max(1, Math.min(10, Math.floor(attempts)));
-    const baseD = Math.max(0, Math.min(CONSTANTS.MAX_RETRY_BACKOFF_MS, Math.floor(delay)));
+  async retry(fn, attempts=CONSTANTS.MAX_RETRY_ATTEMPTS, delay=CONSTANTS.RETRY_DELAY_BASE) {
+    const maxA = Math.max(1, Math.min(10, attempts|0));
+    const baseD = Math.max(0, Math.min(CONSTANTS.MAX_RETRY_BACKOFF_MS, delay|0));
     let lastErr;
     for (let i = 0; i < maxA; i++) {
       try { return await fn(); } catch (e) {
         lastErr = e;
-        if (i < maxA - 1) await Utils.sleep(Math.min(CONSTANTS.MAX_RETRY_BACKOFF_MS, baseD * (2 ** i)));
+        if (i < maxA - 1) await Utils.sleep(Math.min(CONSTANTS.MAX_RETRY_BACKOFF_MS, baseD * Math.pow(2, i)));
       }
     }
     throw lastErr || new Error("retry: 所有重试都失败");
   },
 
-  // 网络地址检测（保持原有逻辑）
-  isValidDomain(d) { return typeof d === "string" && /^[a-zA-Z0-9.-]+$/.test(d) && !d.startsWith(".") && !d.endsWith(".") && !d.includes(".."); },
+  isValidDomain: (d) => typeof d === "string" && /^[a-zA-Z0-9.-]+$/.test(d) && !d.startsWith(".") && !d.endsWith(".") && !d.includes(".."),
   
-  isIPv4(ip) {
-    if (typeof ip !== "string") return false;
-    if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) return false;
-    const parts = ip.split(".");
-    for (let i = 0; i < parts.length; i++) {
-      const n = Number(parts[i]);
-      if (!Number.isInteger(n) || n < 0 || n > 255) return false;
+  isIPv4: (ip) => {
+    if (typeof ip !== "string" || !/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) return !1;
+    for (const p of ip.split(".")) {
+      const n = Number(p);
+      if (!Number.isInteger(n) || n < 0 || n > 255) return !1;
     }
-    return true;
+    return !0;
   },
 
-  isLoopbackOrLocal(ip) {
-    if (typeof ip !== "string") return false;
-    if (ip === "localhost" || ip === "localhost.localdomain") return true;
-    if (!Utils.isIPv4(ip)) return false;
-    return ip === "127.0.0.1" || ip === "0.0.0.0" || ip.startsWith("127.");
-  },
+  isLoopbackOrLocal: (ip) => typeof ip === "string" && (/^localhost|::1$|^127\./.test(ip) || ip === "0.0.0.0"),
 
-  isPrivateIP(ip) {
-    if (typeof ip !== "string" || !ip) return false;
+  isPrivateIP: (ip) => {
+    if (typeof ip !== "string" || !ip) return !1;
     if (ip.includes(":")) {
       const v = ip.toLowerCase();
-      if (v === "::1") return true;
-      if (v.startsWith("fc") || v.startsWith("fd")) return true;
-      if (v.startsWith("fe80")) return true;
-      return false;
+      return v === "::1" || /^(fc|fd|fe80)/.test(v);
     }
-    if (!Utils.isIPv4(ip)) return false;
+    if (!Utils.isIPv4(ip)) return !1;
     try {
-      const parts = ip.split(".").map(n => parseInt(n, 10));
-      const a = parts[0];
-      const b = parts[1];
-      if (a === 10) return true;
-      if (a === 127) return true;
-      if (a === 192 && b === 168) return true;
-      if (a === 172 && b >= 16 && b <= 31) return true;
-      if (a === 169 && b === 254) return true;
-      if (a === 100 && b >= 64 && b <= 127) return true;
-      if (a >= 224 && a <= 239) return true;
-      return false;
-    } catch {
-      return false;
-    }
+      const pts = ip.split(".").map(n => parseInt(n, 10));
+      const a = pts[0], b = pts[1];
+      return a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) || (a >= 224 && a <= 239);
+    } catch { return !1; }
   },
 
-  isLocalDomain(domain) {
-    if (typeof domain !== "string") return false;
-    return domain.endsWith(".local") || domain.endsWith(".localhost") || domain.endsWith(".localdomain") || domain.endsWith(".test");
-  },
+  isLocalDomain: (d) => typeof d === "string" && /\.(local|localhost|localdomain|test)$/.test(d),
 
-  // URL安全化
-  sanitizeUrl(u) {
+  sanitizeUrl: (u) => {
     if (typeof u !== "string" || !u) return null;
-    const trimmed = u.trim();
-    if (!trimmed) return null;
+    const t = u.trim();
+    if (!t) return null;
 
-    // 修复：更精确的 data-url 大小校验
-    if (trimmed.startsWith(CONSTANTS.DATA_URL_PREFIX)) {
-      const b64 = trimmed.slice(CONSTANTS.DATA_URL_PREFIX.length);
-      // 考虑 Base64 填充字符(=)的影响
-      const padding = (b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0);
-      const estBytes = (b64.length * 3 - padding) / 4;
-      if (estBytes <= CONSTANTS.DATA_URL_MAX_BYTES) return u;
-      return null;
+    if (t.startsWith(CONSTANTS.DATA_URL_PREFIX)) {
+      const b64 = t.slice(CONSTANTS.DATA_URL_PREFIX.length);
+      const estB = (b64.length * 3 / 4) | 0;
+      return estB <= CONSTANTS.DATA_URL_MAX_BYTES ? u : null;
     }
 
-    if (!/^https?:\/\//i.test(trimmed)) return null;
+    if (!/^https?:\/\//i.test(t)) return null;
 
     try {
-      const url = new URL(trimmed);
-      const scheme = url.protocol.replace(":", "").toLowerCase();
+      const url = new URL(t);
+      const scheme = url.protocol.slice(0, -1).toLowerCase();
       if (!["http", "https"].includes(scheme)) return null;
       url.username = ""; url.password = "";
 
       const port = url.port ? parseInt(url.port, 10) : (scheme === "https" ? 443 : 80);
-      if (!CONSTANTS.SAFE_PORTS.has(port)) {
-        if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
-        if (port < 1024) return null;
-      }
+      if (!CONSTANTS.SAFE_PORTS.has(port) && (port <= 0 || port > 65535 || port < 1024)) return null;
 
       const host = url.hostname;
-      if (Utils.isLocalDomain(host)) return null;
-      if (Utils.isLoopbackOrLocal(host)) return null;
-      if (Utils.isIPv4(host) && Utils.isPrivateIP(host)) return null;
+      if (Utils.isLocalDomain(host) || Utils.isLoopbackOrLocal(host) || (Utils.isIPv4(host) && Utils.isPrivateIP(host))) return null;
 
-      // 修复：移除强制 HTTP 转 HTTPS 的逻辑，避免破坏依赖 HTTP 的合法服务
-      // if (scheme === "http" && !Utils.isPrivateIP(host) && !Utils.isLoopbackOrLocal(host)) {
-      //   url.protocol = "https:"; if (!url.port || url.port === "80") url.port = "443";
-      // }
       return url.toString();
     } catch { return null; }
   },
 
-  // 工具函数保持不变但内联化
-  filterProxiesByRegion(proxies, region) {
+  filterProxiesByRegion: (proxies, region) => {
     if (!Array.isArray(proxies) || !region?.regex) return [];
     const limit = Config?.regionOptions?.ratioLimit ?? 2;
     return proxies.filter(p => {
-      const name = p?.name; 
-      if (typeof name !== "string") return false;
-      
-      // 修复：安全限制字符串长度，防止 ReDoS 攻击
-      if (name.length > 100) return false;
-      
-      // 修复：确保 match 结果不为 null
+      const name = p?.name;
+      if (typeof name !== "string" || name.length > 100) return !1;
       const m = name.match(/(?:[xX✕✖⨉]|倍率)(\d+\.?\d*)/i);
       const mult = m ? parseFloat(m[1]) : 1;
       return region.regex.test(name) && mult <= limit;
     }).map(p => p.name);
   },
 
-  getProxyGroupBase() { return (Config.common?.proxyGroup || {}); },
-  getRuleProviderBase() { return (Config.common?.ruleProvider || { type: "http", format: "yaml", interval: 86400 }); },
+  getProxyGroupBase: () => (Config.common?.proxyGroup || {}),
+  getRuleProviderBase: () => (Config.common?.ruleProvider || {type:"http", format:"yaml", interval:86400}),
+  safeInt: (h, def=0) => { try { const n = parseInt(h ?? "0", 10); return Number.isFinite(n) ? n : def; } catch { return def; } },
 
-  safeInt(hdrValue, def = 0) {
-    try { const n = parseInt(hdrValue ?? "0", 10); return Number.isFinite(n) ? n : def; } catch { return def; }
-  },
-
-  toDataUrl(text) {
+  toDataUrl: (text) => {
     if (typeof text !== "string" || !text) return "";
-    
     try {
-      // 修复：在转换前检查原始文本长度，避免内存分配浪费
-      const maxOriginalSize = Math.floor(CONSTANTS.DATA_URL_MAX_BYTES / 1.34); // Base64 ≈ 1.33x
-      if (text.length > maxOriginalSize) {
-        throw new Error(`文本过大 (${text.length} > ${maxOriginalSize})，跳过 DataURL 生成`);
-      }
-
-      // 修复：显式检查 Buffer 是否存在
+      const maxSize = (CONSTANTS.DATA_URL_MAX_BYTES / 1.34) | 0;
+      if (text.length > maxSize) throw new Error("text过大");
       if (typeof Buffer !== "undefined") {
         const b64 = Buffer.from(text).toString("base64");
-        const estBytes = Math.floor(b64.length * 0.75);
-        if (estBytes > CONSTANTS.DATA_URL_MAX_BYTES) throw new Error("data-url 超出大小限制");
-        return `${CONSTANTS.DATA_URL_PREFIX}${b64}`;
+        return ((b64.length * 0.75)|0) <= CONSTANTS.DATA_URL_MAX_BYTES ? `${CONSTANTS.DATA_URL_PREFIX}${b64}` : "";
       }
-    } catch (e) {
-      // Buffer 失败，继续尝试浏览器方法
-    }
-    
+    } catch (e) {}
     try {
-      // 修复：优先使用现代 API，避免废弃的 unescape/encodeURIComponent
-      let base64 = "";
       if (typeof TextEncoder !== "undefined" && typeof btoa === "function") {
-        // 使用 TextEncoder + btoa 的现代方法
-        const encoder = new TextEncoder();
-        const data = encoder.encode(text);
-        // 手动转换为 base64
-        let binary = "";
-        for (let i = 0; i < data.length; i++) {
-          binary += String.fromCharCode(data[i]);
-        }
-        base64 = btoa(binary);
-      } else if (typeof btoa === "function") {
-        // 回退到传统方法（已废弃但更兼容）
-        base64 = btoa(unescape(encodeURIComponent(text)));
-      } else {
-        return ""; // 不支持 base64 编码
+        const data = new TextEncoder().encode(text);
+        let bin = "";
+        for (let i = 0; i < data.length; i++) bin += String.fromCharCode(data[i]);
+        const b64 = btoa(bin);
+        return ((b64.length * 0.75)|0) <= CONSTANTS.DATA_URL_MAX_BYTES ? `${CONSTANTS.DATA_URL_PREFIX}${b64}` : "";
       }
-      
-      const estBytes = Math.floor(base64.length * 0.75);
-      if (estBytes > CONSTANTS.DATA_URL_MAX_BYTES) throw new Error("data-url 超出大小限制");
-      return `${CONSTANTS.DATA_URL_PREFIX}${base64}`;
-    } catch { return ""; }
-  },  // 修复：添加缺失的 safeSet 方法
-  safeSet: (obj, key, val) => {
-    if (obj && typeof obj === "object") {
-      obj[key] = val;
-    }
-  }
+      if (typeof btoa === "function") {
+        const b64 = btoa(unescape(encodeURIComponent(text)));
+        return ((b64.length * 0.75)|0) <= CONSTANTS.DATA_URL_MAX_BYTES ? `${CONSTANTS.DATA_URL_PREFIX}${b64}` : "";
+      }
+    } catch { }
+    return "";
+  },
+  
+  safeSet: (obj, key, val) => { if (obj && typeof obj === "object") obj[key] = val; }
 };
 
 /* ============== GitHub 镜像系统 ============== */
-const GH_MIRRORS = ["", "https://mirror.ghproxy.com/", "https://github.moeyy.xyz/", "https://ghproxy.com/"];
+const GH_MIRRORS = ["", "https://mirror.ghproxy.com/", "https://ghproxy.net/"];
 const GH_TEST_TARGETS = [
   "https://raw.githubusercontent.com/github/gitignore/main/Node.gitignore",
   "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/main/README.md", 
@@ -660,7 +400,7 @@ const ICON_VAL = (fn) => { try { return typeof fn === "function" ? fn() : fn; } 
 
 const URLS = (() => {
   const rulesets = {
-    applications: () => GH_RAW_URL("DustinWin/ruleset_geodata/clash-ruleset/applications.list"),
+    applications: () => "https://fastly.jsdelivr.net/gh/DustinWin/clash-ruleset@main/applications.list",
     ai: () => GH_RAW_URL("dahaha-365/YaNet/dist/rulesets/mihomo/ai.list"),
     adblock_mihomo_mrs: () => GH_RAW_URL("217heidai/adblockfilters/main/rules/adblockmihomo.mrs"),
     category_bank_jp_mrs: () => GH_RAW_URL("MetaCubeX/meta-rules-dat/meta/geo/geosite/category-bank-jp.mrs"),
@@ -710,44 +450,44 @@ const Config = {
     enable: true, listen: "127.0.0.1:1053", ipv6: true, "prefer-h3": true, "use-hosts": true, "use-system-hosts": true,
     "respect-rules": true, "enhanced-mode": "fake-ip", "fake-ip-range": "198.18.0.1/16",
     "fake-ip-filter": ["*", "+.lan", "+.local", "+.market.xiaomi.com"],
-    nameserver: ["https://120.53.53.53/dns-query", "https://223.5.5.5/dns-query"],
-    "proxy-server-nameserver": ["https://120.53.53.53/dns-query", "https://223.5.5.5/dns-query"],
+    nameserver: ["https://120.53.53.53/dns-query", "https://223.5.5.5/dns-query", "https://8.8.8.8/dns-query"],
+    "proxy-server-nameserver": ["https://120.53.53.53/dns-query", "https://223.5.5.5/dns-query", "https://8.8.8.8/dns-query"],
     "nameserver-policy": { "geosite:private": "system", "geosite:cn,steam@cn,category-games@cn,microsoft@cn,apple@cn": ["119.29.29.29", "223.5.5.5"] }
   },
   services: [
-    { id:"openai", rule:["DOMAIN-SUFFIX,grazie.ai,国外AI","DOMAIN-SUFFIX,grazie.aws.intellij.net,国外AI","RULE-SET,ai,国外AI"], name:"国外AI", url:"https://chat.openai.com/cdn-cgi/trace", icon: ICON_VAL(ICONS.ChatGPT), ruleProvider:{ name:"ai", url: URLS.rulesets.ai() } },
+    { id:"openai", rule:["DOMAIN-SUFFIX,grazie.ai,国外AI","DOMAIN-SUFFIX,grazie.aws.intellij.net,国外AI","RULE-SET,ai,国外AI"], name:"国外AI", url:"https://chat.openai.com/cdn-cgi/trace", icon: ICON_VAL(ICONS.ChatGPT), ruleProvider:{ name:"ai", url: URLS.rulesets.ai(), format: "text", behavior: "classical" } },
     { id:"youtube", rule:["GEOSITE,youtube,YouTube"], name:"YouTube", url:"https://www.youtube.com/s/desktop/494dd881/img/favicon.ico", icon: ICON_VAL(ICONS.YouTube) },
     { id:"biliintl", rule:["GEOSITE,biliintl,哔哩哔哩东南亚"], name:"哔哩哔哩东南亚", url:"https://www.bilibili.tv/", icon: ICON_VAL(ICONS.Bilibili3), proxiesOrder:["默认节点","直连"] },
     { id:"bahamut", rule:["GEOSITE,bahamut,巴哈姆特"], name:"巴哈姆特", url:"https://ani.gamer.com.tw/ajax/getdeviceid.php", icon: ICON_VAL(ICONS.Bahamut), proxiesOrder:["默认节点","直连"] },
-    { id:"disney", rule:["GEOSITE,disney,Disney+"], name:"Disney+", url:"https://disney.api.edge.bamgrid.com/devices", icon: ICON_VAL(ICONS.DisneyPlus) },
+    { id:"disney", rule:["GEOSITE,disney,Disney+"], name:"Disney+", url:"https://www.disneyplus.com/robots.txt", icon: ICON_VAL(ICONS.DisneyPlus) },
     { id:"netflix", rule:["GEOSITE,netflix,NETFLIX"], name:"NETFLIX", url:"https://api.fast.com/netflix/speedtest/v2?https=true", icon: ICON_VAL(ICONS.Netflix) },
     { id:"tiktok", rule:["GEOSITE,tiktok,Tiktok"], name:"Tiktok", url:"https://www.tiktok.com/", icon: ICON_VAL(ICONS.TikTok) },
-    { id:"spotify", rule:["GEOSITE,spotify,Spotify"], name:"Spotify", url:"http://spclient.wg.spotify.com/signup/public/v1/account", icon: ICON_VAL(ICONS.Spotify) },
+    { id:"spotify", rule:["GEOSITE,spotify,Spotify"], name:"Spotify", url:"https://api.spotify.com/v1/me", icon: ICON_VAL(ICONS.Spotify) },
     { id:"pixiv", rule:["GEOSITE,pixiv,Pixiv"], name:"Pixiv", url:"https://www.pixiv.net/favicon.ico", icon: ICON_VAL(ICONS.Pixiv) },
     { id:"hbo", rule:["GEOSITE,hbo,HBO"], name:"HBO", url:"https://www.hbo.com/favicon.ico", icon: ICON_VAL(ICONS.HBO) },
     { id:"tvb", rule:["GEOSITE,tvb,TVB"], name:"TVB", url:"https://www.tvb.com/logo_b.svg", icon: ICON_VAL(ICONS.TVB) },
     { id:"primevideo", rule:["GEOSITE,primevideo,Prime Video"], name:"Prime Video", url:"https://m.media-amazon.com/images/G/01/digital/video/web/logo-min-remaster.png", icon: ICON_VAL(ICONS.PrimeVideo) },
-    { id:"hulu", rule:["GEOSITE,hulu,Hulu"], name:"Hulu", url:"https://auth.hulu.com/v4/web/password/authenticate", icon: ICON_VAL(ICONS.Hulu) },
-    { id:"telegram", rule:["GEOIP,telegram,Telegram"], name:"Telegram", url:"http://www.telegram.org/img/website_icon.svg", icon: ICON_VAL(ICONS.Telegram) },
+    { id:"hulu", rule:["GEOSITE,hulu,Hulu"], name:"Hulu", url:"https://www.hulu.com/robots.txt", icon: ICON_VAL(ICONS.Hulu) },
+    { id:"telegram", rule:["GEOIP,telegram,Telegram"], name:"Telegram", url:"https://web.telegram.org/robots.txt", icon: ICON_VAL(ICONS.Telegram) },
     { id:"whatsapp", rule:["GEOSITE,whatsapp,WhatsApp"], name:"WhatsApp", url:"https://web.whatsapp.com/data/manifest.json", icon: ICON_VAL(ICONS.Telegram) },
     { id:"line", rule:["GEOSITE,line,Line"], name:"Line", url:"https://line.me/page-data/app-data.json", icon: ICON_VAL(ICONS.Line) },
     { id:"games", rule:["GEOSITE,category-games@cn,国内网站","GEOSITE,category-games,游戏专用"], name:"游戏专用", icon: ICON_VAL(ICONS.Game) },
     { id:"tracker", rule:["GEOSITE,tracker,跟踪分析"], name:"跟踪分析", icon: ICON_VAL(ICONS.Reject), proxies:["REJECT","直连","默认节点"] },
     { id:"ads", rule:["GEOSITE,category-ads-all,广告过滤","RULE-SET,adblock_combined,广告过滤"], name:"广告过滤", icon: ICON_VAL(ICONS.Advertising), proxies:["REJECT","直连","默认节点"], ruleProvider:{ name:"adblock_combined", url: URLS.rulesets.adblock_mihomo_mrs(), format:"mrs", behavior:"domain" } },
-    { id:"apple", rule:["GEOSITE,apple-cn,苹果服务"], name:"苹果服务", url:"http://www.apple.com/library/test/success.html", icon: ICON_VAL(ICONS.Apple2) },
-    { id:"google", rule:["GEOSITE,google,谷歌服务"], name:"谷歌服务", url:"http://www.google.com/generate_204", icon: ICON_VAL(ICONS.GoogleSearch) },
-    { id:"microsoft", rule:["GEOSITE,microsoft@cn,国内网站","GEOSITE,microsoft,微软服务"], name:"微软服务", url:"http://www.msftconnecttest.com/connecttest.txt", icon: ICON_VAL(ICONS.Microsoft) },
+    { id:"apple", rule:["GEOSITE,apple-cn,苹果服务"], name:"苹果服务", url:"https://www.apple.com/robots.txt", icon: ICON_VAL(ICONS.Apple2) },
+    { id:"google", rule:["GEOSITE,google,谷歌服务"], name:"谷歌服务", url:"https://www.google.com/robots.txt", icon: ICON_VAL(ICONS.GoogleSearch) },
+    { id:"microsoft", rule:["GEOSITE,microsoft@cn,国内网站","GEOSITE,microsoft,微软服务"], name:"微软服务", url:"https://www.microsoft.com/robots.txt", icon: ICON_VAL(ICONS.Microsoft) },
     { id:"github", rule:["GEOSITE,github,Github"], name:"Github", url:"https://github.com/robots.txt", icon: ICON_VAL(ICONS.GitHub) },
     { id:"japan", rule:["RULE-SET,category-bank-jp,日本网站","GEOIP,jp,日本网站,no-resolve"], name:"日本网站", url:"https://r.r10s.jp/com/img/home/logo/touch.png", icon: ICON_VAL(ICONS.JP), ruleProvider:{ name:"category-bank-jp", url: URLS.rulesets.category_bank_jp_mrs(), format:"mrs", behavior:"domain" } }
   ],
   system: { "allow-lan": true, "bind-address": "*", mode: "rule", profile: { "store-selected": true, "store-fake-ip": true }, "unified-delay": true, "tcp-concurrent": true, "keep-alive-interval": 1800, "find-process-mode": "strict", "geodata-mode": true, "geodata-loader": "memconservative", "geo-auto-update": true, "geo-update-interval": 24, sniffer: { enable: true, "force-dns-mapping": true, "parse-pure-ip": false, "override-destination": true, sniff: { TLS: { ports: [443, 8443] }, HTTP: { ports: [80, "8080-8880"] }, QUIC: { ports: [443, 8443] } }, "skip-src-address": ["127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"], "force-domain": ["+.google.com", "+.googleapis.com", "+.googleusercontent.com", "+.youtube.com", "+.facebook.com", "+.messenger.com", "+.fbcdn.net", "fbcdn-a.akamaihd.net"], "skip-domain": ["Mijia Cloud", "+.oray.com"] }, ntp: { enable: true, "write-to-system": false, server: "cn.ntp.org.cn" }, "geox-url": { geoip: URLS.geox.geoip(), geosite: URLS.geox.geosite(), mmdb: URLS.geox.mmdb(), asn: URLS.geox.asn() } },
   common: {
     ruleProvider: { type: "http", format: "yaml", interval: 86400 },
-    proxyGroup: { interval: 300, timeout: 3000, url: "http://cp.cloudflare.com/generate_204", lazy: true, "max-failed-times": 3, hidden: false },
+    proxyGroup: { interval: 300, timeout: 3000, url: "https://cp.cloudflare.com/generate_204", lazy: true, "max-failed-times": 3, hidden: false },
     defaultProxyGroups: [
       { name:"下载软件", icon: ICON_VAL(ICONS.Download), proxies:["直连","REJECT","默认节点","国内网站"] },
       { name:"其他外网", icon: ICON_VAL(ICONS.StreamingNotCN), proxies:["默认节点","国内网站"] },
-      { name:"国内网站", url:"http://wifi.vivo.com.cn/generate_204", icon: ICON_VAL(ICONS.StreamingCN), proxies:["直连","默认节点"] }
+      { name:"国内网站", url:"http://www.gstatic.com/generate_204", icon: ICON_VAL(ICONS.StreamingCN), proxies:["直连","默认节点"] }
     ],
     postRules: ["GEOSITE,private,DIRECT", "GEOIP,private,DIRECT,no-resolve", "GEOSITE,cn,国内网站", "GEOIP,cn,国内网站,no-resolve", "MATCH,其他外网"]
   },
@@ -1033,7 +773,7 @@ function normalizeRegionName(name) {
 class RegionAutoManager {
   constructor() { 
     this.knownRegexMap = this._buildFromConfigRegions(Config?.regionOptions?.regions || []); 
-    this._cache = new Map(); // 添加缓存机制
+    this._cache = new Map();
   }
 
   _buildFromConfigRegions(regions) {
@@ -1056,46 +796,46 @@ class RegionAutoManager {
       const name = this._normalizeName(p?.name); 
       if (!name) continue;
       
-      // 使用缓存
+      // 缓存检查：返回缓存的匹配项（包括null）
       if (this._cache.has(name)) {
         const cached = this._cache.get(name);
-        if (cached) found.set(cached.name, cached);
+        if (cached !== null) found.set(cached.name, cached);
         continue;
       }
 
+      let matched = null;
       for (const e of this.knownRegexMap) {
         if (e.regex.test(name)) {
+          matched = e;
           found.set(e.name, e);
-          this._cache.set(name, e);
           break;
         }
       }
 
-      // 修复：确保 hints 默认为数组，避免 null 值导致的问题
-      const hints = name.match(/[A-Za-z]{2,}|[\u4e00-\u9fa5]{2,}/g) || [];
-      if (hints.length) {
-        const wl = { 
-          es: "ES西班牙", ca: "CA加拿大", au: "AU澳大利亚", fr: "FR法国", 
-          it: "IT意大利", nl: "NL荷兰", ru: "RU俄罗斯", in: "IN印度", 
-          br: "BR巴西", ar: "AR阿根廷" 
-        };
-        for (const h of hints) {
-          const k = h.toLowerCase();
-          if (wl[k]) {
-            const cn = wl[k].replace(/[A-Z]{2}/, '').replace(/[^\u4e00-\u9fa5]/g, '');
-            const regex = new RegExp(`${k}|${cn}`, 'i');
-            const region = { name: wl[k], regex, icon: ICON_VAL(ICONS.WorldMap) };
-            found.set(wl[k], region);
-            this._cache.set(name, region);
-            break;
+      // 如果未匹配，尝试从名称中提取国家代码
+      if (!matched) {
+        const hints = name.match(/[A-Za-z]{2,}|[\u4e00-\u9fa5]{2,}/g) || [];
+        if (hints.length) {
+          const wl = { 
+            es: "ES西班牙", ca: "CA加拿大", au: "AU澳大利亚", fr: "FR法国", 
+            it: "IT意大利", nl: "NL荷兰", ru: "RU俄罗斯", in: "IN印度", 
+            br: "BR巴西", ar: "AR阿根廷" 
+          };
+          for (const h of hints) {
+            const k = h.toLowerCase();
+            if (wl[k]) {
+              const cn = wl[k].replace(/[A-Z]{2}/, '').replace(/[^\u4e00-\u9fa5]/g, '');
+              const region = { name: wl[k], regex: new RegExp(`${k}|${cn}`, 'i'), icon: ICON_VAL(ICONS.WorldMap) };
+              found.set(wl[k], region);
+              matched = region;
+              break;
+            }
           }
         }
       }
 
-      // 缓存未匹配的结果
-      if (!this._cache.has(name)) {
-        this._cache.set(name, null);
-      }
+      // 缓存结果（包括null表示未匹配）
+      this._cache.set(name, matched);
     }
     return found;
   }
@@ -1103,7 +843,7 @@ class RegionAutoManager {
   mergeNewRegions(configRegions, discoveredMap) {
     const merged = Array.isArray(configRegions) ? [...configRegions] : [];
     for (const r of discoveredMap.values()) {
-      if (!this._hasRegion(merged, r.name)) {
+      if (r && !this._hasRegion(merged, r.name)) {
         merged.push({ name: r.name, regex: r.regex, icon: r.icon || ICON_VAL(ICONS.WorldMap) });
       }
     }
@@ -1292,19 +1032,9 @@ class AdBlockManager {
       });
       return;
     }
-    if (!domainSet || !(domainSet instanceof Set) || domainSet.size === 0) return;
-    const combinedList = Array.from(domainSet);
-    const joined = combinedList.join("\n");
-    if (!joined || joined.length > 1_000_000) return;
-    const dataUrl = Utils.toDataUrl(joined);
-    Utils.safeSet(ruleProviders, "adblock_combined", {
-      type: "http",
-      behavior: "domain",
-      format: "text",
-      url: dataUrl,
-      path: "./ruleset/adblock_combined.list",
-      interval: 43200
-    });
+    // Mihomo/Clash 不支持 data:text/plain;base64 协议，跳过基于 DataURL 的规则提供者
+    // 仅使用远程 URL 规则提供者
+    return;
   }
 }
 
@@ -1713,77 +1443,46 @@ class CentralManager extends EventEmitter {
   }
 }
 
-/* ============== 优劣节点池（优化版） ============== */
+/* ============== 优劣节点池（超优化版） ============== */
 class NodePools {
   constructor() { 
     this.good = new Set(); 
     this.bad = new Set(); 
-    this.recentScores = []; 
-    this.recentAvail = [];
-    this._lastSnapshot = { good: [], bad: [] };
-    
-    // 修复：使用环形缓冲区替代数组 shift 操作
-    this._scoreBuffer = new Array(CONSTANTS.POOL_WINDOW_SIZE).fill(null);
-    this._availBuffer = new Array(CONSTANTS.POOL_WINDOW_SIZE).fill(null);
-    this._bufferIndex = 0;
-    this._bufferCount = 0;
+    this._scoreBuf = new Array(CONSTANTS.POOL_WINDOW_SIZE).fill(null);
+    this._availBuf = new Array(CONSTANTS.POOL_WINDOW_SIZE).fill(null);
+    this._idx = 0;
+    this._cnt = 0;
   }
 
   pushSamples(score, avail) {
-    if (Number.isFinite(score)) { 
-      // 修复：使用环形缓冲区，避免 O(N) 的 shift 操作
-      this._scoreBuffer[this._bufferIndex] = Number(score);
-    }
-    if (Number.isFinite(avail)) { 
-      // 修复：使用环形缓冲区，避免 O(N) 的 shift 操作
-      this._availBuffer[this._bufferIndex] = Number(avail);
-    }
-    
-    this._bufferIndex = (this._bufferIndex + 1) % CONSTANTS.POOL_WINDOW_SIZE;
-    if (this._bufferCount < CONSTANTS.POOL_WINDOW_SIZE) {
-      this._bufferCount++;
-    }
-    
-    // 为了向后兼容，同步更新数组（但实际使用时应该使用缓冲区）
-    this._syncBuffersToArrays();
+    if (Number.isFinite(score)) this._scoreBuf[this._idx] = Number(score);
+    if (Number.isFinite(avail)) this._availBuf[this._idx] = Number(avail);
+    this._idx = (this._idx + 1) % CONSTANTS.POOL_WINDOW_SIZE;
+    if (this._cnt < CONSTANTS.POOL_WINDOW_SIZE) this._cnt++;
   }
   
-  // 同步环形缓冲区到数组（保持向后兼容）
-  // 优化：只在必要时更新数组，避免不必要的重建
-  _syncBuffersToArrays() {
-    // 只在缓冲区计数与数组长度不匹配时更新数组
-    if (this._bufferCount !== this.recentScores.length + this.recentAvail.length) {
-      this.recentScores = [];
-      this.recentAvail = [];
-      
-      for (let i = 0; i < this._bufferCount; i++) {
-        const idx = (this._bufferIndex - this._bufferCount + i + CONSTANTS.POOL_WINDOW_SIZE) % CONSTANTS.POOL_WINDOW_SIZE;
-        if (this._scoreBuffer[idx] !== null) this.recentScores.push(this._scoreBuffer[idx]);
-        if (this._availBuffer[idx] !== null) this.recentAvail.push(this._availBuffer[idx]);
-      }
-    }
-  }
   getAdaptiveThresholds() {
-    const enough = (this.recentScores.length >= CONSTANTS.MIN_POOL_ITEMS_FOR_ADAPT) && 
-                   (this.recentAvail.length >= CONSTANTS.MIN_POOL_ITEMS_FOR_ADAPT);
-    if (!enough) return { goodScore: CONSTANTS.QUALITY_SCORE_THRESHOLD, goodAvail: CONSTANTS.AVAILABILITY_MIN_RATE };
+    if (this._cnt < CONSTANTS.MIN_POOL_ITEMS_FOR_ADAPT) {
+      return { goodScore: CONSTANTS.QUALITY_SCORE_THRESHOLD, goodAvail: CONSTANTS.AVAILABILITY_MIN_RATE };
+    }
     
     const alpha = CONSTANTS.ADAPT_ALPHA;
-    const p90Score = this.calculatePercentile(this.recentScores, CONSTANTS.GOOD_PERCENTILE);
-    const p50Avail = this.calculatePercentile(this.recentAvail, CONSTANTS.BAD_PERCENTILE);
+    const p90Score = this._calcPercentile(this._scoreBuf.slice(0, this._cnt), CONSTANTS.GOOD_PERCENTILE);
+    const p50Avail = this._calcPercentile(this._availBuf.slice(0, this._cnt), CONSTANTS.BAD_PERCENTILE);
     const goodScore = alpha * CONSTANTS.QUALITY_SCORE_THRESHOLD + (1 - alpha) * p90Score;
     const goodAvail = alpha * CONSTANTS.AVAILABILITY_MIN_RATE + (1 - alpha) * p50Avail;
     return { goodScore: Utils.clamp(goodScore, 0, 100), goodAvail: Utils.clamp(goodAvail, 0, 1) };
   }
 
-  calculatePercentile(values, p) {
-    if (!Array.isArray(values) || !values.length) return 0;
-    const sorted = [...values].sort((a, b) => a - b);
-    const index = (p / 100) * (sorted.length - 1);
-    const i = Math.floor(index);
-    const frac = index - i;
-    if (i >= sorted.length - 1) return sorted[sorted.length - 1];
-    return sorted[i] + (sorted[i + 1] - sorted[i]) * frac;
+  _calcPercentile(values, p) {
+    const arr = values.filter(v => v !== null);
+    if (!arr.length) return 0;
+    arr.sort((a, b) => a - b);
+    const idx = (p / 100) * (arr.length - 1);
+    const i = Math.floor(idx);
+    const frac = idx - i;
+    if (i >= arr.length - 1) return arr[arr.length - 1];
+    return arr[i] + (arr[i + 1] - arr[i]) * frac;
   }
 
   classify(id, score, avail) {
@@ -1803,30 +1502,20 @@ class NodePools {
   clear() { 
     this.good.clear(); 
     this.bad.clear(); 
-    this.recentScores = []; 
-    this.recentAvail = []; 
-    
-    // 修复：清空环形缓冲区
-    this._scoreBuffer.fill(null);
-    this._availBuffer.fill(null);
-    this._bufferIndex = 0;
-    this._bufferCount = 0;
+    this._scoreBuf.fill(null);
+    this._availBuf.fill(null);
+    this._idx = 0;
+    this._cnt = 0;
   }
 
   snapshot() { 
-    this._lastSnapshot = { good: Array.from(this.good), bad: Array.from(this.bad) }; 
-    return this._lastSnapshot; 
+    return { good: Array.from(this.good), bad: Array.from(this.bad) }; 
   }
 
   namesFromIds(proxies, ids) {
     if (!Array.isArray(proxies) || !Array.isArray(ids) || !ids.length) return [];
     const map = new Map(proxies.filter(p => p?.id && p?.name).map(p => [p.id, p.name]));
-    const out = []; 
-    for (const id of ids) { 
-      const name = map.get(id); 
-      if (name) out.push(name); 
-    }
-    return out;
+    return ids.map(id => map.get(id)).filter(Boolean);
   }
 }
 
@@ -1908,96 +1597,44 @@ const EnvDetector = {
 
 /* ============== 错误对象工厂模式 ============== */
 const ErrorConfigFactory = {
-  // 创建错误配置对象
-  createErrorConfig(errMsg, options = {}) {
-    const timestamp = Utils.now();
-    const truncatedMsg = errMsg.substring(0, 20);
-    const defaults = {
-      server: "127.0.0.1",
-      port: 80,
-      version: "optimized_fixed"
-    };
-    
-    return {
-      name: `⛔ 脚本错误: ${truncatedMsg}...`,
-      type: "direct",
-      ...defaults,
-      ...options,
-      _error: true,
-      _errorMessage: errMsg,
-      _errorTimestamp: timestamp,
-      _scriptError: {
-        timestamp,
-        message: errMsg,
-        fallback: true,
-        version: defaults.version
-      }
-    };
-  }
+  createErrorConfig: (msg, opts={}) => ({
+    name: `⛔ 脚本错误: ${msg.substring(0, 20)}...`,
+    type: "direct", server: "127.0.0.1", port: 80, version: "optimized_fixed",
+    ...opts, _error: !0, _errorMessage: msg, _errorTimestamp: Utils.now(),
+    _scriptError: { timestamp: Utils.now(), message: msg, fallback: !0, version: "optimized_fixed" }
+  })
 };
 
-/* ============== 修复后的 Main 函数 ============== */
+/* ============== 修复后的 Main 函数（超精简版） ============== */
 function main(config) {
-  // 修复：快速检查输入
   if (!config || typeof config !== 'object') {
-    Logger.error("Main", "输入配置无效");
+    Logger.error("Main", "配置无效");
     return config;
   }
 
   try {
-    // 尝试构建配置
     return ConfigBuilder.build(config);
   } catch (e) {
-    const errMsg = e?.message || "未知错误";
-    Logger.error("Main", `构建失败: ${errMsg}`);
-
-    // 优化：使用错误对象工厂模式，消除重复时间戳计算和分散赋值
+    const msg = e?.message || "未知错误";
+    Logger.error("Main", `构建失败: ${msg}`);
     try {
-      // 浅拷贝以避免修改原引用，尽可能保留原始配置
-      const fallbackConfig = { ...config };
-      
-      // 确保 proxies 存在
-      if (!Array.isArray(fallbackConfig.proxies)) {
-        fallbackConfig.proxies = [];
-      }
-
-      // 使用工厂函数创建错误节点，确保时间戳一致性
-      const errorNode = ErrorConfigFactory.createErrorConfig(errMsg);
-      fallbackConfig.proxies.unshift(errorNode);
-      
-      return fallbackConfig;
+      const fallbackCfg = { ...config };
+      if (!Array.isArray(fallbackCfg.proxies)) fallbackCfg.proxies = [];
+      fallbackCfg.proxies.unshift(ErrorConfigFactory.createErrorConfig(msg));
+      return fallbackCfg;
     } catch (fallbackErr) {
-      // 终极回退：直接返回原始对象，不做任何处理
-      Logger.error("Main", "回退逻辑也失败，返回原始配置");
+      Logger.error("Main", "回退失败，返回原始配置");
       return config;
     }
   }
 }
 
-/* ============== 优化后的兼容性函数 ============== */
-// 直接导出方法引用，避免不必要的函数调用开销
-const buildConfigForParser = ConfigBuilder.build.bind(ConfigBuilder);
-
 /* ============== 优化后的统一导出逻辑 ============== */
-// 统一导出对象，消除重复定义
-const EXPORTS = {
-  main, 
-  CentralManager, 
-  ConfigBuilder, 
-  buildConfigForParser,
-  RegionAutoManager,  // 修复：导出 RegionAutoManager
-  LRUCache,           // 修复：导出 LRUCache
-  NodeScorer,         // 修复：导出 NodeScorer
-  Utils,               // 修复：导出 Utils
-  DataMasker,
-  CONSTANTS,
-  Config,
-  GH_MIRRORS
-};
+const EXPORTS = { main, CentralManager, ConfigBuilder, buildConfigForParser: ConfigBuilder.build.bind(ConfigBuilder),
+  RegionAutoManager, LRUCache, NodeScorer, Utils, DataMasker, CONSTANTS, Config, GH_MIRRORS };
 
-// 统一环境检测与导出
 if (EnvDetector.isCommonJS()) module.exports = EXPORTS;
 if (EnvDetector.isNode()) Object.assign(global, EXPORTS);
 if (EnvDetector.isBrowser()) Object.assign(window, EXPORTS);
 
-Logger.info("Script", `优化版本加载完成 - 环境检测: ${EnvDetector.getEnvironment()}, 使用ConfigBuilder统一配置构建`);
+Logger.info("Script", `优化版加载完成 - 环境: ${EnvDetector.getEnvironment()}`);
