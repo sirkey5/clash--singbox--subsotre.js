@@ -307,15 +307,15 @@ const Utils = {
 const GH_MIRRORS = ["", "https://mirror.ghproxy.com/", "https://ghproxy.net/"];
 const GH_TEST_TARGETS = [
   "https://raw.githubusercontent.com/github/gitignore/main/Node.gitignore",
-  "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/main/README.md", 
+  "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/main/README.md",
   "https://raw.githubusercontent.com/cli/cli/trunk/README.md"
 ];
 
+let GH_CURRENT_MIRROR = "";
 let GH_PROXY_PREFIX = "";
-let ghCurrentMirror = "";
-let ghLastProbeTimestamp = 0;
-let ghIsSelecting = false;
-const ghWaiters = [];
+let GH_LAST_PROBE_TIMESTAMP = 0;
+let GH_IS_SELECTING = false;
+const GH_WAITERS = [];
 
 const GH_RAW_URL = (path) => `${GH_PROXY_PREFIX}https://raw.githubusercontent.com/${path}`;
 const GH_RELEASE_URL = (path) => `${GH_PROXY_PREFIX}https://github.com/${path}`;
@@ -340,9 +340,9 @@ async function __probeMirror(prefix, fetchFn, timeoutMs) {
 
 async function selectBestMirror(runtimeFetch) {
   const now = Utils.now();
-  if (ghCurrentMirror && (now - ghLastProbeTimestamp) < CONSTANTS.GH_PROBE_TTL) return ghCurrentMirror;
-  if (ghIsSelecting) return new Promise((resolve) => ghWaiters.push(resolve));
-  ghIsSelecting = true;
+  if (GH_CURRENT_MIRROR && (now - GH_LAST_PROBE_TIMESTAMP) < CONSTANTS.GH_PROBE_TTL) return GH_CURRENT_MIRROR;
+  if (GH_IS_SELECTING) return new Promise((resolve) => GH_WAITERS.push(resolve));
+  GH_IS_SELECTING = true;
   try {
     let resolved = false;
     let chosen = "";
@@ -361,20 +361,20 @@ async function selectBestMirror(runtimeFetch) {
 
     // 修复：当没有找到更好的镜像时，保持当前有效的镜像
     if (!resolved && chosen === "") {
-      chosen = ghCurrentMirror || "";
+      chosen = GH_CURRENT_MIRROR || "";
     }
-    ghCurrentMirror = chosen;
-    ghLastProbeTimestamp = now;
+    GH_CURRENT_MIRROR = chosen;
+    GH_LAST_PROBE_TIMESTAMP = now;
     GH_PROXY_PREFIX = chosen;
     return chosen;
   } catch (e) {
     Logger.warn("GH.selectBestMirror", e?.message || e);
-    return ghCurrentMirror || "";
+    return GH_CURRENT_MIRROR || "";
   } finally {
-    ghIsSelecting = false;
-    while (ghWaiters.length) {
-      const fn = ghWaiters.shift();
-      try { fn(ghCurrentMirror || ""); } catch {}
+    GH_IS_SELECTING = false;
+    while (GH_WAITERS.length) {
+      const fn = GH_WAITERS.shift();
+      try { fn(GH_CURRENT_MIRROR || ""); } catch {}
     }
   }
 }
@@ -1285,11 +1285,7 @@ class HttpClient {
           signal = AbortSignal.timeout(timeout);
         } else if (_AbortController) {
           const controller = new _AbortController();
-          timerId = setTimeout(() => { 
-            try { 
-              if (!controller.signal.aborted) controller.abort(); 
-            } catch {} 
-          }, timeout);
+          timerId = setTimeout(() => { try { controller.abort(); } catch {} }, timeout);
           signal = controller.signal;
         }
       }
@@ -1298,11 +1294,7 @@ class HttpClient {
 
       try {
         const resp = await _fetch(sanitized, finalOpts); 
-        
-        if (timerId) {
-          clearTimeout(timerId);
-          timerId = null;
-        }
+        if (timerId) clearTimeout(timerId);
         
         if (resp.status >= 300 && resp.status < 400) {
           const location = resp.headers.get("location");
@@ -1315,20 +1307,8 @@ class HttpClient {
         }
         return resp;
       } catch (err) {
-        if (timerId) {
-          clearTimeout(timerId);
-          timerId = null;
-        }
-        
-        if (["AbortError", "TimeoutError"].includes(err?.name)) {
-          throw new Error(`请求超时 (${timeout}ms): ${sanitized}`);
-        }
-        
-        // 处理连接被关闭等网络错误
-        if (err?.message?.includes("closed pipe") || err?.message?.includes("ECONNRESET") || err?.message?.includes("ETIMEDOUT")) {
-          throw new Error(`网络连接错误: ${sanitized} - ${err.message}`);
-        }
-        
+        if (timerId) clearTimeout(timerId);
+        if (["AbortError", "TimeoutError"].includes(err?.name)) throw new Error(`请求超时 (${timeout}ms): ${sanitized}`);
         throw err;
       }
     };
@@ -1697,7 +1677,13 @@ const EXPORTS = {
 };
 
 if (EnvDetector.isCommonJS()) module.exports = EXPORTS;
-if (EnvDetector.isNode()) Object.assign(global, EXPORTS);
-if (EnvDetector.isBrowser()) Object.assign(window, EXPORTS);
+if (EnvDetector.isNode()) {
+  const safeExports = { ...EXPORTS };
+  delete safeExports.Proxy;
+  Object.assign(global, safeExports);
+}
+if (EnvDetector.isBrowser()) {
+  window.__MihomoScript__ = EXPORTS;
+}
 
 Logger.info("Script", `优化版加载完成 - 环境: ${EnvDetector.getEnvironment()}`);
