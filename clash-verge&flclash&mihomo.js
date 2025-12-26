@@ -1285,7 +1285,11 @@ class HttpClient {
           signal = AbortSignal.timeout(timeout);
         } else if (_AbortController) {
           const controller = new _AbortController();
-          timerId = setTimeout(() => { try { controller.abort(); } catch {} }, timeout);
+          timerId = setTimeout(() => { 
+            try { 
+              if (!controller.signal.aborted) controller.abort(); 
+            } catch {} 
+          }, timeout);
           signal = controller.signal;
         }
       }
@@ -1294,7 +1298,11 @@ class HttpClient {
 
       try {
         const resp = await _fetch(sanitized, finalOpts); 
-        if (timerId) clearTimeout(timerId);
+        
+        if (timerId) {
+          clearTimeout(timerId);
+          timerId = null;
+        }
         
         if (resp.status >= 300 && resp.status < 400) {
           const location = resp.headers.get("location");
@@ -1307,8 +1315,20 @@ class HttpClient {
         }
         return resp;
       } catch (err) {
-        if (timerId) clearTimeout(timerId);
-        if (["AbortError", "TimeoutError"].includes(err?.name)) throw new Error(`请求超时 (${timeout}ms): ${sanitized}`);
+        if (timerId) {
+          clearTimeout(timerId);
+          timerId = null;
+        }
+        
+        if (["AbortError", "TimeoutError"].includes(err?.name)) {
+          throw new Error(`请求超时 (${timeout}ms): ${sanitized}`);
+        }
+        
+        // 处理连接被关闭等网络错误
+        if (err?.message?.includes("closed pipe") || err?.message?.includes("ECONNRESET") || err?.message?.includes("ETIMEDOUT")) {
+          throw new Error(`网络连接错误: ${sanitized} - ${err.message}`);
+        }
+        
         throw err;
       }
     };
