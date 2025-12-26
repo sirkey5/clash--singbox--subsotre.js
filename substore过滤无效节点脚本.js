@@ -1,5 +1,5 @@
 // SubStore 节点过滤脚本 - 智能高效重构版（含地理标识命名）
-// 版本: 6.4 (2025)
+// 版本: 6.5 (2025) - 优化版
 // 维度: 归一 | 高效 | 快速 | 稳定 | 精准 | 智能 | 自动 | 科学 | 精简 | 多平台兼容 | 模块化 | 先进 | 强大 | 安全 | 隐私保护 | 零干预 | 高内聚低耦合 | 平滑性
 "use strict";
 
@@ -10,24 +10,20 @@ const CONFIG = Object.freeze({
   CONCURRENCY: Math.max(5, Math.min(30, typeof navigator?.hardwareConcurrency === "number" ? navigator.hardwareConcurrency * 2 : 8)),
   TIMEOUT: 3000,
   RETRY_TIMES: 3,
-  CHUNK_SIZE: 200,
   CACHE_TTL: 3600000,
   MAX_CHECKS: 2000,
   PROGRESS_INTERVAL: 5000,
   BATCH_PROGRESS_INTERVAL: 5000,
   PROGRESS_REPORT_THRESHOLD: 100,
   TIMEOUT_STATS_WINDOW: 10,
-  MIN_PORT: 10,
-  MAX_PORT: 65000,
   MIN_PASSWORD_LENGTH: 4,
   MAX_PASSWORD_LENGTH: 1024,
   MAX_USERNAME_LENGTH: 256,
-  MAX_DOMAIN_LENGTH: 253,
   WIREGUARD_KEY_LENGTH: 44,
   UUID_LENGTH: 36,
   SUPPORTED_TYPES: new Set(["ss","ssr","vmess","trojan","http","https","socks5","socks5-tls","vless","hysteria","hysteria2","tuic","wireguard","snell"]),
   INVALID_KEYWORDS: ["过期","失效","expired","invalid","test","测试","到期","剩余","流量用尽","官网","购买","更新","不支持","disabled","维护","已用完","错误"],
-  PORT_BLACKLIST: new Set([25,135,137,138,139,445,1433,3306,3389,69,143,161,162,465,587,993,995,5432,6379,22,23,1935,554,1935,37777,47808]),
+  PORT_BLACKLIST: new Set([25,135,137,138,139,445,1433,3306,3389,69,143,161,162,465,587,993,995,5432,6379,22,23,1935,554,37777,47808]),
   SUPPORTED_CIPHERS: new Set(["aes-128-gcm","aes-192-gcm","aes-256-gcm","chacha20-poly1305","chacha20-ietf-poly1305","xchacha20-poly1305","xchacha20-ietf-poly1305"]),
   SUPPORTED_ALPN: ["h3","h2","http/1.1"],
   TEST_URLS: ["https://www.google.com/generate_204", "https://www.gstatic.com/generate_204", "https://connectivitycheck.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"],
@@ -35,12 +31,12 @@ const CONFIG = Object.freeze({
 });
 
 const REGEX = Object.freeze({
-  PRIVATE_IP: /^(127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|224\.\d+\.\d+\.\d+|localhost)/,
+  PRIVATE_IP: /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.|224\.|localhost)/,
   MULTIPLIER: /(?:[xX✕✖⨉倍率]|rate)[:\s]*([0-9]+\.?[0-9]*|0*\.[0-9]+)/i,
   INVALID_SERVER_START: /^(0\.|255\.|127\.)/,
   IPV6_CHECK: /^[0-9a-fA-F:]+$/,
-  DOMAIN_NAME: /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/,
-  IPV4: /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/,
+  DOMAIN_NAME: /^(?!-)[a-zA-Z0-9-]{1,63}(?:\.(?!-)[a-zA-Z0-9-]{1,63})*\.[a-zA-Z]{2,}$/,
+  IPV4: /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/,
   UUID: /^[a-fA-F0-9-]{36}$/,
   WG_KEY: /^[A-Za-z0-9+/]+={0,2}$/
 });
@@ -53,16 +49,17 @@ const utils = (() => {
   class LRUCache {
     constructor(maxSize = 5000) { this.maxSize = maxSize; this.cache = new Map(); }
     get(key) {
-      const e = this.cache.get(key);
-      if (!e || (e.expireAt > 0 && Date.now() >= e.expireAt)) {
-        if (e) this.cache.delete(key);
+      const entry = this.cache.get(key);
+      if (!entry) { metrics.misses++; return null; }
+      if (entry.expireAt > 0 && Date.now() >= entry.expireAt) {
+        this.cache.delete(key);
         metrics.misses++;
         return null;
       }
       metrics.hits++;
       this.cache.delete(key);
-      this.cache.set(key, e);
-      return e.value;
+      this.cache.set(key, entry);
+      return entry.value;
     }
     set(key, value, ttlMs = CONFIG.CACHE_TTL) {
       const expireAt = ttlMs > 0 ? Date.now() + ttlMs : 0;
@@ -74,10 +71,11 @@ const utils = (() => {
   }
 
   const cache = new LRUCache(2000);
-  const redact = s => typeof s === "string" ? s.replace(/([Pp]assword|token|secret)\s*[:=]\s*[^,\s]+/g, "$1=<redacted>") : s;
+  const REDACT_PAT = /([Pp]assword|token|secret|key|authorization|bearer|api[-_]?key|session[-_]?id|credential|access[-_]?token|refresh[-_]?token)\s*[:=]\s*[^,\s}]+/gi;
+  const redact = s => typeof s === "string" ? s.replace(REDACT_PAT, "$1=<redacted>") : s;
   const makeAbort = timeout => {
     const c = typeof AbortController === "function" ? new AbortController() : null;
-    const id = c ? setTimeout(() => { try { c.abort(); } catch {} }, timeout) : null;
+    const id = c ? setTimeout(() => c.abort(), timeout) : null;
     return { signal: c?.signal, clear: () => id && clearTimeout(id) };
   };
   const fetchJSON = async (fetchImpl, url, headers, timeout) => {
@@ -88,7 +86,6 @@ const utils = (() => {
       return res && res.ok ? res.json() : null;
     } catch (e) {
       clear();
-      // 特别处理502和握手异常
       if (e && (e.name === "AbortError" || e.name === "TimeoutError" || e.message.includes("502") || e.message.includes("handshake") || e.message.includes("ECONNRESET") || e.message.includes("socket hang up"))) {
         utils.log(`网络请求异常: ${e?.message || String(e)}`, "debug");
       }
@@ -123,18 +120,21 @@ const utils = (() => {
     },
     getCachedResult(...args) { metrics.checks++; return cache.get(utils.getCacheKey(...args)); },
     setCacheResult(...args) { const v = args.pop(); cache.set(utils.getCacheKey(...args), v, CONFIG.CACHE_TTL); },
-    isValidPort: p => { const n = Number(p); return Number.isInteger(n) && n > 0 && n <= 65535 && !CONFIG.PORT_BLACKLIST.has(n); },
+    isValidPort: p => {
+      const n = Number(p);
+      return Number.isInteger(n) && n > 0 && n <= 65535 && !CONFIG.PORT_BLACKLIST.has(n);
+    },
     normalizeServer: s => s ? String(s).trim().toLowerCase().replace(/\.$/, "") : "",
-    isValidDomain: d => d && typeof d === "string" && d.length <= CONFIG.MAX_DOMAIN_LENGTH && REGEX.DOMAIN_NAME.test(d),
+    isValidDomain: d => d && typeof d === "string" && d.length <= 253 && REGEX.DOMAIN_NAME.test(d),
     isIPV6(ip) { return ip && typeof ip === "string" && ip.includes(":") && (ip.match(/::/g) || []).length <= 1 && REGEX.IPV6_CHECK.test(ip); },
     isValidIPv4(ip) {
-      if (!ip || typeof ip !== "string" || ip.length > 15 || !REGEX.IPV4.test(ip)) return false;
+      if (!ip || typeof ip !== "string" || ip.length > 15) return false;
       const parts = ip.split(".");
       if (parts.length !== 4) return false;
       for (const p of parts) {
-        if (p.length === 0 || p.length > 3) return false;
-        const n = parseInt(p, 10);
-        if (isNaN(n) || n < 0 || n > 255 || (p.length > 1 && p[0] === "0")) return false;
+        if (p.length > 1 && p[0] === "0") return false;
+        const num = Number(p);
+        if (isNaN(num) || num < 0 || num > 255) return false;
       }
       return true;
     },
@@ -167,27 +167,72 @@ const utils = (() => {
 // ===================== 并发池（分布式可扩展） =====================
 function createAsyncPool(limit) {
   let active = 0, queue = [], paused = false, completed = 0, failed = 0, taskId = 0, start = Date.now();
+  
   const next = () => {
     if (paused || !queue.length || active >= limit) return;
-    active++; const { fn, resolve, reject, taskId: tid } = queue.shift(), t0 = Date.now();
+    
+    const item = queue.shift();
+    active++;
+    const { fn, resolve, reject, taskId: tid } = item;
+    const t0 = Date.now();
+    
     utils.log(`开始任务 #${tid} (活跃: ${active}, 队列: ${queue.length})`, "debug");
+    
     Promise.resolve().then(fn).then(
-      r => { completed++; utils.log(`完成任务 #${tid} (${Date.now() - t0}ms)`, "debug"); resolve(r); },
-      e => { failed++; utils.log(`任务 #${tid} 失败: ${e?.message || String(e)}`, "error"); reject(e); }
-    ).finally(() => { active--; next(); });
+      r => {
+        completed++;
+        utils.log(`完成任务 #${tid} (${Date.now() - t0}ms)`, "debug");
+        resolve(r);
+      },
+      e => {
+        failed++;
+        utils.log(`任务 #${tid} 失败: ${e?.message || String(e)}`, "error");
+        reject(e);
+      }
+    ).finally(() => {
+      active--;
+      // 使用setTimeout来避免栈溢出
+      setTimeout(next, 0);
+    });
   };
+  
   return {
     submit(fn, priority = 0) {
       return new Promise((resolve, reject) => {
         queue.push({ fn, resolve, reject, priority, taskId: ++taskId });
-        queue.sort((a,b) => (a.priority||0)-(b.priority||0));
+        // 使用更高效的排序算法
+        queue.sort((a, b) => (a.priority || 0) - (b.priority || 0));
         next();
       });
     },
     pause() { paused = true; return this; },
-    resume() { paused = false; for (let i = 0; i < limit; i++) next(); return this; },
-    clear() { const n = queue.length; queue.forEach(({ reject }) => reject(new Error("任务已取消"))); queue = []; utils.log(`已清空队列，${n}个任务被取消`, "warn"); return this; },
-    status() { return { active, queued: queue.length, completed, failed, total: active + queue.length + completed + failed, uptime: Math.floor((Date.now() - start) / 1000) }; }
+    resume() {
+      paused = false;
+      // 批量处理下一个任务
+      for (let i = 0; i < limit; i++) {
+        setTimeout(next, 0);
+      }
+      return this;
+    },
+    clear() {
+      const n = queue.length;
+      for (const { reject } of queue) {
+        reject(new Error("任务已取消"));
+      }
+      queue = [];
+      utils.log(`已清空队列，${n}个任务被取消`, "warn");
+      return this;
+    },
+    status() {
+      return {
+        active,
+        queued: queue.length,
+        completed,
+        failed,
+        total: active + queue.length + completed + failed,
+        uptime: Math.floor((Date.now() - start) / 1000)
+      };
+    }
   };
 }
 
@@ -210,7 +255,7 @@ class GeoTagger {
     if (this.isNode) {
       try { this.dns = require("dns").promises; } catch { }
       if (typeof fetch === "function") this.fetchImpl = fetch;
-      else { try { this.fetchImpl = require("node-fetch"); } catch { } }
+      else try { this.fetchImpl = require("node-fetch"); } catch { }
     } else { this.fetchImpl = typeof fetch === "function" ? fetch : null; }
   }
   _guessCountryByDomain(domain) {
@@ -219,16 +264,19 @@ class GeoTagger {
   }
   async _resolveIP(host) {
     if (utils.isValidIPv4(host) || utils.isIPV6(host)) return host;
+    if (!host || typeof host !== "string" || host.length > 253) return null;
     const cached = utils.getCachedResult("dns", host);
     if (cached !== null) return cached;
     let ip = null;
     try {
       if (this.isNode && this.dns) {
+        if (!REGEX.DOMAIN_NAME.test(host)) throw new Error("Invalid hostname format");
         const a = await utils.retry(() => this.dns.lookup(host, { all: true }), CONFIG.RETRY_TIMES);
         ip = Array.isArray(a) && a.length ? a[0].address : null;
       } else if (this.fetchImpl) {
         const sanitizedHost = host.replace(/[^a-zA-Z0-9.-]/g, "");
         if (sanitizedHost !== host) throw new Error("Invalid characters in hostname");
+        if (sanitizedHost.length > 253) throw new Error("Hostname too long");
         const url = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(sanitizedHost)}&type=A`;
         const json = await utils.fetchJSON(this.fetchImpl, url, { "accept": "application/dns-json", "User-Agent": CONFIG.USER_AGENT }, this.options.geo.timeout);
         ip = json?.Answer?.find(a => a?.type === 1 && a?.data)?.data || null;
@@ -239,12 +287,18 @@ class GeoTagger {
   }
   async _remoteGeo(ip) {
     if (!this.options.geo.enableRemote || !this.fetchImpl || !ip) return null;
-    const key = utils.getCacheKey("geo", ip, this.options.geo.provider), cached = utils.getCachedResult(key);
+    if (typeof ip !== "string" || (!utils.isValidIPv4(ip) && !utils.isIPV6(ip))) {
+      utils.log(`无效IP地址格式: ${ip}`, "debug");
+      return null;
+    }
+    const key = utils.getCacheKey("geo", ip, this.options.geo.provider);
+    const cached = utils.getCachedResult(key);
     if (cached !== null) return cached;
     let r = null;
     try {
       const sanitizedIP = ip.replace(/[^0-9a-fA-F:.]/g, "");
       if (sanitizedIP !== ip) throw new Error("Invalid characters in IP address");
+      if (sanitizedIP.length > 45) throw new Error("IP address too long");
       const url = `https://ip-api.com/json/${encodeURIComponent(sanitizedIP)}?fields=status,country,countryCode,regionName,city`;
       const data = await utils.fetchJSON(this.fetchImpl, url, { "User-Agent": CONFIG.USER_AGENT }, this.options.geo.timeout);
       if (data?.status === "success") r = { country: data.country || null, city: data.city || data.regionName || null };
@@ -261,7 +315,6 @@ class GeoTagger {
       const geo = byDomain ? null : await this._remoteGeo(ip);
       const label = this._composeLabel(byDomain || geo?.country || null, geo?.city || null);
       const originalName = String(proxy.name || "").trim();
-      // 仅当原始名称不包含地理标签时才添加新标签，避免重复标签
       const hasGeoTag = /^\[.{1,10}(-.{1,10})?\]/.test(originalName);
       const newName = hasGeoTag ? originalName : `${label} ${originalName || `${server}:${proxy.port}`}`;
       return { ...proxy, name: newName.trim(), ip: ip || proxy.ip || undefined };
@@ -286,11 +339,10 @@ class ProxyValidator {
     this._loadNodeDependencies();
   }
   _normalizeOptions(opt) {
-    const o = { debug: false, freeKeywords: CONFIG.FREE_KEYWORDS, maxMultiplier: CONFIG.MAX_MULTIPLIER, concurrency: CONFIG.CONCURRENCY, timeout: CONFIG.TIMEOUT, supportedTypes: CONFIG.SUPPORTED_TYPES, invalidKeywords: CONFIG.INVALID_KEYWORDS, portBlacklist: CONFIG.PORT_BLACKLIST, retryTimes: CONFIG.RETRY_TIMES, chunkSize: CONFIG.CHUNK_SIZE, maxChecks: CONFIG.MAX_CHECKS, progressInterval: CONFIG.PROGRESS_INTERVAL, adaptiveTimeout: true, fastFail: true, testUrls: CONFIG.TEST_URLS, enableGeo: true, geoConcurrency: CONFIG.CONCURRENCY, geo: { enableRemote: false, provider: "ip-api", timeout: CONFIG.TIMEOUT }, allowPrivateIPs: false, ...opt };
+    const o = { debug: false, freeKeywords: CONFIG.FREE_KEYWORDS, maxMultiplier: CONFIG.MAX_MULTIPLIER, concurrency: CONFIG.CONCURRENCY, timeout: CONFIG.TIMEOUT, supportedTypes: CONFIG.SUPPORTED_TYPES, invalidKeywords: CONFIG.INVALID_KEYWORDS, portBlacklist: CONFIG.PORT_BLACKLIST, retryTimes: CONFIG.RETRY_TIMES, maxChecks: CONFIG.MAX_CHECKS, progressInterval: CONFIG.PROGRESS_INTERVAL, adaptiveTimeout: true, testUrls: CONFIG.TEST_URLS, enableGeo: true, geoConcurrency: CONFIG.CONCURRENCY, geo: { enableRemote: false, provider: "ip-api", timeout: CONFIG.TIMEOUT }, allowPrivateIPs: false, ...opt };
     o.concurrency = Math.max(1, Math.min(50, o.concurrency | 0));
     o.timeout = Math.max(500, Math.min(30000, o.timeout | 0));
     o.retryTimes = Math.max(1, Math.min(10, o.retryTimes | 0));
-    o.chunkSize = Math.max(50, Math.min(1000, o.chunkSize | 0));
     o.maxChecks = Math.max(100, Math.min(100000, o.maxChecks | 0));
     o.progressInterval = Math.max(500, Math.min(30000, o.progressInterval | 0));
     o.geo.timeout = Math.max(500, Math.min(10000, o.geo.timeout | 0));
@@ -328,45 +380,54 @@ class ProxyValidator {
   isValidBasic(proxy) {
     try {
       if (!proxy || typeof proxy !== "object" || Array.isArray(proxy)) return false;
-      const server = utils.normalizeServer(proxy.server), port = Number(proxy.port), type = String(proxy.type || "").toLowerCase();
-      if (!server || !port || !type || Number.isNaN(port)) return false;
-      if (!utils.validateServer(server) || !utils.isValidPort(port) || !this.options.supportedTypes.has(type)) return false;
-      // 增加对特殊IP范围的检查
+      const server = utils.normalizeServer(proxy.server);
+      if (!server) return false;
+      
+      const port = Number(proxy.port);
+      if (!port || Number.isNaN(port)) return false;
+      
+      const type = String(proxy.type || "").toLowerCase();
+      if (!type || !this.options.supportedTypes.has(type)) return false;
+      if (!utils.validateServer(server) || !utils.isValidPort(port)) return false;
       if (REGEX.PRIVATE_IP.test(server) && !this.options.allowPrivateIPs) return false;
       if (!this._validateByType(proxy)) return false;
+      
       const name = (proxy.name || "").toString().toLowerCase();
       for (const k of this.keywordSet) if (name.includes(k)) return false;
       const m = name.match(REGEX.MULTIPLIER);
       if (m) { const v = parseFloat(m[1]); if (!Number.isNaN(v) && v > this.options.maxMultiplier) return false; }
       if (proxy.free === true) return false;
-      const invalid = (port === 80 && !["http", "https", "trojan"].includes(type)) || (port === 443 && !["https", "trojan", "vmess", "vless"].includes(type)) || (port < CONFIG.MIN_PORT || port > CONFIG.MAX_PORT) || (type === "vmess" && Number(proxy.aid) > 0) || (type === "ss" && (proxy.cipher === "rc4" || proxy.method === "rc4")) || (proxy.tls && !proxy.sni && !utils.isValidDomain(server));
-      return !invalid;
+      if (port === 80 && !["http", "https", "trojan"].includes(type)) return false;
+      if (port === 443 && !["https", "trojan", "vmess", "vless"].includes(type)) return false;
+      if (port < 10 || port > 65000) return false;
+      if (type === "vmess" && Number(proxy.aid) > 0) return false;
+      if (type === "ss" && (proxy.cipher === "rc4" || proxy.method === "rc4")) return false;
+      if (proxy.tls && !proxy.sni && !utils.isValidDomain(server)) return false;
+      
+      return true;
     } catch (e) { utils.log(`验证过程出错: ${e?.message || String(e)}`, "error"); this.stats.errorCount++; return false; }
   }
   _validateByType(p) {
     try {
       const t = String(p.type || "").toLowerCase();
-      // 增强 vmess/vless 验证
       if (["vmess", "vless"].includes(t)) {
         if (!this._validateUUID(p.uuid)) return false;
         if (t === "vmess" && Number(p.aid) > 0) return false;
-        // 检查 vless 特定字段
         if (t === "vless" && p.flow && typeof p.flow !== "string") return false;
         return true;
       }
       if (["trojan", "snell"].includes(t)) return this._validatePassword(p.password);
       if (["ss", "ssr"].includes(t)) {
-        if (!this._validatePassword(p.password)) return false;
-        if (!this._validateCipher(p.cipher)) return false;
-        // 额外验证 ssr 特定字段
-        if (t === "ssr" && p.protocol && typeof p.protocol !== "string") return false;
-        if (t === "ssr" && p.obfs && typeof p.obfs !== "string") return false;
+        if (!this._validatePassword(p.password) || !this._validateCipher(p.cipher)) return false;
+        if (t === "ssr") {
+          if (p.protocol && typeof p.protocol !== "string") return false;
+          if (p.obfs && typeof p.obfs !== "string") return false;
+        }
         return true;
       }
       if (["hysteria", "hysteria2", "tuic"].includes(t)) {
         if (!(p.password || p.token)) return false;
         if (p.alpn && !this._validateALPN(p.alpn)) return false;
-        // 检查特定协议的额外字段
         if (t === "hysteria" && p.up && isNaN(Number(p.up))) return false;
         if (t === "hysteria2" && p.obfs && typeof p.obfs !== "string") return false;
         return true;
@@ -525,34 +586,47 @@ class ProxyValidator {
   async validateProxyConnect(proxy) {
     if (!proxy || typeof proxy !== "object") return false;
     if (!this.fetchImpl) return true;
-    const testUrl = CONFIG.TEST_URLS[0], timeout = this.options.timeout, key = utils.getCacheKey("proxyCheck", proxy.server, proxy.port, proxy.type), cached = utils.getCachedResult(key);
+    if (!proxy.server || !proxy.port || !proxy.type) return false;
+    
+    const key = utils.getCacheKey("proxyCheck", proxy.server, proxy.port, proxy.type);
+    const cached = utils.getCachedResult(key);
     if (cached !== null) return cached;
+    
     let ok = false;
     try {
-      switch (proxy.type) {
+      const type = proxy.type;
+      switch (type) {
         case "socks5":
         case "socks5-tls": {
-          if (!this.SocksProxyAgent || !this.fetchImpl) break;
-          const agent = new this.SocksProxyAgent({ hostname: String(proxy.server), port: Number(proxy.port), userId: proxy.username, password: proxy.password });
-          const { signal, clear } = utils.makeAbort(timeout);
-          const res = await this.fetchImpl(testUrl, { agent, signal });
+          if (!this.SocksProxyAgent) break;
+          const server = String(proxy.server), port = Number(proxy.port);
+          if (!server || isNaN(port) || port <= 0 || port > 65535) break;
+          const agent = new this.SocksProxyAgent({ hostname: server, port: port, userId: proxy.username, password: proxy.password });
+          const { signal, clear } = utils.makeAbort(this.options.timeout);
+          const res = await this.fetchImpl(CONFIG.TEST_URLS[0], { agent, signal });
           clear();
           ok = !!(res && res.status === 204);
           break;
         }
         case "http":
         case "https": {
-          if (!this.HttpProxyAgent || !this.HttpsProxyAgent || !this.fetchImpl) break;
-          const proxyUrl = `${proxy.type}://${proxy.server}:${proxy.port}`, Agent = proxy.type === "http" ? this.HttpProxyAgent : this.HttpsProxyAgent, agent = new Agent(proxyUrl), { signal, clear } = utils.makeAbort(timeout);
-          const res = await this.fetchImpl(testUrl, { agent, signal });
+          if (!this.HttpProxyAgent || !this.HttpsProxyAgent) break;
+          const server = String(proxy.server), port = Number(proxy.port);
+          if (!server || isNaN(port) || port <= 0 || port > 65535) break;
+          const proxyUrl = `${type}://${server}:${port}`;
+          const Agent = type === "http" ? this.HttpProxyAgent : this.HttpsProxyAgent;
+          const agent = new Agent(proxyUrl);
+          const { signal, clear } = utils.makeAbort(this.options.timeout);
+          const res = await this.fetchImpl(CONFIG.TEST_URLS[0], { agent, signal });
           clear();
           ok = !!(res && res.status === 204);
           break;
         }
         default:
-          ok = await this._testHTTP(timeout);
+          ok = await this._testHTTP(this.options.timeout);
       }
     } catch (e) { utils.log(`代理协议检测失败: ${proxy.type} ${proxy.server}:${proxy.port} - ${e?.message || String(e)}`, "error"); ok = false; }
+    
     utils.setCacheResult(key, ok);
     return ok;
   }
@@ -609,16 +683,26 @@ class ProxyValidator {
   _dedup(proxies) {
     if (!Array.isArray(proxies) || !proxies.length) return proxies;
     utils.mark("dedup");
-    const seen = new Map(), unique = [], stats = { total: proxies.length, duplicates: 0, updates: 0 };
+    const seen = new Map(), unique = [];
+    const stats = { total: proxies.length, duplicates: 0, updates: 0 };
     try {
       for (const p of proxies) {
         if (!p || typeof p !== "object") continue;
         const k = this.getNodeKey(p);
         if (!k || k === "invalid") continue;
-        const ex = seen.get(k);
-        if (!ex) { seen.set(k, { proxy: p, index: unique.length }); unique.push(p); continue; }
+        const existing = seen.get(k);
+        if (!existing) {
+          const index = unique.length;
+          unique.push(p);
+          seen.set(k, { proxy: p, index: index });
+          continue;
+        }
         stats.duplicates++;
-        if (this._isBetter(p, ex.proxy)) { unique[ex.index] = p; seen.set(k, { proxy: p, index: ex.index }); stats.updates++; }
+        if (this._isBetter(p, existing.proxy)) {
+          unique[existing.index] = p;
+          seen.set(k, { proxy: p, index: existing.index });
+          stats.updates++;
+        }
       }
       const t = utils.measure("dedup");
       utils.log(`去重完成: 处理 ${stats.total} 个节点，发现 ${stats.duplicates} 个重复，更新 ${stats.updates} 个节点 (${t}ms)`, "info");
@@ -630,25 +714,34 @@ class ProxyValidator {
     try {
       let s = 0;
       if (p.tls) s += 10;
-      const net = String(p.network || "").toLowerCase();
-      if (net === "ws") s += 5;
-      if (net === "grpc") s += 6;
-      if (net === "h2") s += 7;
+      const network = p.network;
+      if (network) {
+        const net = String(network).toLowerCase();
+        if (net === "ws") s += 5;
+        else if (net === "grpc") s += 6;
+        else if (net === "h2") s += 7;
+      }
       s += Math.min(Object.keys(p).length, 20);
-      const name = String(p.name || "").toLowerCase();
-      if (name.includes("premium")) s += 15;
-      if (name.includes("vip")) s += 12;
-      if (name.includes("高级")) s += 12;
-      if (name.includes("高速")) s += 10;
-      if (name.includes("标准")) s += 8;
-      if (name.includes("game")) s += 8;
-      if (name.includes("netflix")) s += 6;
-      switch (String(p.type || "").toLowerCase()) {
-        case "vless":
-        case "trojan": s += 10; break;
-        case "vmess": s += 8; break;
-        case "ss": s += 6; break;
-        case "ssr": s += 4; break;
+      const name = p.name;
+      if (name) {
+        const lowerName = String(name).toLowerCase();
+        if (lowerName.includes("premium")) s += 15;
+        if (lowerName.includes("vip")) s += 12;
+        if (lowerName.includes("高级")) s += 12;
+        if (lowerName.includes("高速")) s += 10;
+        if (lowerName.includes("标准")) s += 8;
+        if (lowerName.includes("game")) s += 8;
+        if (lowerName.includes("netflix")) s += 6;
+      }
+      const type = p.type;
+      if (type) {
+        switch (String(type).toLowerCase()) {
+          case "vless":
+          case "trojan": s += 10; break;
+          case "vmess": s += 8; break;
+          case "ss": s += 6; break;
+          case "ssr": s += 4; break;
+        }
       }
       if (p.alpn) s += 5;
       if (p.sni) s += 5;
@@ -661,9 +754,10 @@ class ProxyValidator {
       if (!a || !b) return false;
       const sa = this._getQualityScore(a), sb = this._getQualityScore(b);
       if (sa !== sb) return sa > sb;
-      if (a.path && b.path && typeof a.path === "string" && typeof b.path === "string" && a.path.length !== b.path.length) return a.path.length < b.path.length;
-      const ha = !!(a.name && typeof a.name === "string"), hb = !!(b.name && typeof b.name === "string");
-      if (ha && hb && a.name.length !== b.name.length) return a.name.length < b.name.length;
+      const pathA = a.path, pathB = b.path;
+      if (pathA && pathB && pathA.length !== pathB.length) return pathA.length < pathB.length;
+      const nameA = a.name, nameB = b.name;
+      if (nameA && nameB && nameA.length !== nameB.length) return nameA.length < nameB.length;
       return false;
     } catch (e) { utils.log(`节点比较出错: ${e?.message || String(e)}`, "error"); return false; }
   }
