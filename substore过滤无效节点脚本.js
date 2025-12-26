@@ -35,7 +35,7 @@ const CONFIG = Object.freeze({
 });
 
 const REGEX = Object.freeze({
-  PRIVATE_IP: /^(127\.|localhost|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/,
+  PRIVATE_IP: /^(127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|224\.\d+\.\d+\.\d+|localhost)/,
   MULTIPLIER: /(?:[xX✕✖⨉倍率]|rate)[:\s]*([0-9]+\.?[0-9]*|0*\.[0-9]+)/i,
   INVALID_SERVER_START: /^(0\.|255\.|127\.)/,
   IPV6_CHECK: /^[0-9a-fA-F:]+$/,
@@ -86,7 +86,14 @@ const utils = (() => {
       const res = await fetchImpl(url, { headers, signal });
       clear();
       return res && res.ok ? res.json() : null;
-    } catch (e) { clear(); throw e; }
+    } catch (e) {
+      clear();
+      // 特别处理502和握手异常
+      if (e && (e.name === "AbortError" || e.name === "TimeoutError" || e.message.includes("502") || e.message.includes("handshake") || e.message.includes("ECONNRESET") || e.message.includes("socket hang up"))) {
+        utils.log(`网络请求异常: ${e?.message || String(e)}`, "debug");
+      }
+      throw e;
+    }
   };
 
   return {
@@ -253,8 +260,10 @@ class GeoTagger {
       const byDomain = this._guessCountryByDomain(server), ip = await this._resolveIP(server);
       const geo = byDomain ? null : await this._remoteGeo(ip);
       const label = this._composeLabel(byDomain || geo?.country || null, geo?.city || null);
-      const name = String(proxy.name || "").trim();
-      const newName = /^\[.+?\]/.test(name) ? name.replace(/^\[.+?\]\s*/, `${label} `) : `${label} ${name || `${server}:${proxy.port}`}`;
+      const originalName = String(proxy.name || "").trim();
+      // 仅当原始名称不包含地理标签时才添加新标签，避免重复标签
+      const hasGeoTag = /^\[.{1,10}(-.{1,10})?\]/.test(originalName);
+      const newName = hasGeoTag ? originalName : `${label} ${originalName || `${server}:${proxy.port}`}`;
       return { ...proxy, name: newName.trim(), ip: ip || proxy.ip || undefined };
     } catch (e) { utils.log(`地理标识失败: ${proxy?.server}:${proxy?.port} - ${e?.message || String(e)}`, "debug"); return proxy; }
   }
