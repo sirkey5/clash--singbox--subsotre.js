@@ -1,28 +1,22 @@
 "use strict";
 
 /**
- * Sirkey 增强版 Mihomo 覆写脚本
+ * Sirkey Mihomo 覆写脚本
  * 
  * ==============================================================================
- * 技术合规性证明 (18 项标准达标情况):
- * 1. 归一性: 严格遵循 Mihomo 2025 Schema, 统一配置输出格式。
- * 2. 高效性: 采用三级 LRU 缓存 (L1/L2/Persistent), 极致优化 IO 与计算。
- * 3. 快速响应: 核心处理流程异步无阻塞, 响应时间 < 100ms。
- * 4. 稳定性: 模拟 30 天连续运行无异常, 具备自愈能力 (SecurityGuard.autoRepair)。
- * 5. 精准匹配: 基于正则表达式与 GeoIP 双重校验, 匹配率 > 99.9%。
- * 6. 智能处理: AIEngine 集成 EWMA 平滑算法与动态权重调整。
- * 7. 自动化: 内置自动健康巡检 (HealthMonitor) 与模型自检。
- * 8. 科学分流: 场景感知 (SceneDetector) 动态路由策略。
- * 9. 精简代码: 移除冗余逻辑, 核心模块高度封装 (Private Fields)。
- * 10. 多平台兼容: 适配 Node.js/Browser/Mihomo 内核环境。
- * 11. 模块化设计: 功能组件支持热插拔, 依赖倒置架构。
- * 12. 技术先进性: 全面使用 ES2022 特性 (Private Fields, Logical Assignment)。
- * 13. 功能强大性: 支持所有 Mihomo API, 集成广告过滤与 GeoIP 自动分组。
- * 14. 安全性: 通过 OWASP Top 10 审计, 防止注入与敏感泄露。
- * 15. 隐私保护: DataMasker 深度脱敏, 零数据采集。
- * 16. 可维护性: 完善的 JSDoc 注释与错误码体系 (SirkeyError)。
- * 17. 可测试性: 配套 VerificationSuite 自动化测试套件, 覆盖率 >= 95%。
- * 18. 规范符合性: 100% 通过官方 Schema 验证与静态扫描。
+ * 功能特性说明:
+ * 1. 结构一致性: 遵循 Mihomo 2025 配置规范，确保输出格式兼容性。
+ * 2. 多级缓存机制: 实现 L1/L2 内存缓存与可选的持久化存储，减少 IO 损耗。
+ * 3. 异步设计: 处理流程采用异步方式，提高响应速度。
+ * 4. 故障自恢复: SecurityGuard 模块提供基础的组件状态检查与清理功能。
+ * 5. 启发式分流: 基于正则匹配与 GeoIP 信息进行节点归类与规则过滤。
+ * 6. 评分引擎: AIEngine 采用 EWMA 算法处理历史数据，支持动态权重评分。
+ * 7. 生命周期管理: SmartLifecycleManager 采用事件驱动方式管理后台维护任务。
+ * 8. 场景感知: 支持根据流量特征自动切换评分权重配置（如游戏、下载等）。
+ * 9. 模块化架构: 采用类与接口解耦设计，便于功能扩展与维护。
+ * 10. 跨平台兼容: 适配 Node.js, 浏览器及 Mihomo 内核执行环境。
+ * 11. 隐私加固: DataMasker 自动对敏感 IP 和 URL 参数进行脱敏处理。
+ * 12. 镜像加速: 内置 GitHub Proxy 镜像选择逻辑，优化资源下载稳定性。
  * ==============================================================================
  * 
  * @version 2.5.0-Sirkey
@@ -44,7 +38,7 @@ const Sirkey = (() => {
     });
   })();
 
-  /** 极致精简常量管理 */
+  /** 常量配置管理 */
   const CONSTANTS = Object.freeze({
     GH: { MIRRORS: ["", "https://mirror.ghproxy.com/", "https://ghproxy.net/", "https://github.moeyy.xyz/", "https://gh.api.99988866.xyz/", "https://cdn.jsdelivr.net/gh/"] },
     UA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -115,7 +109,7 @@ const Sirkey = (() => {
     debug(ctx, ...args) { this.log("DEBUG", ctx, ...args); }
   })();
 
-  /** 工具集 (方案二优化: 智能克隆) */
+  /** 通用工具函数集 */
   const Utils = {
     now: Date.now,
     clamp: (v, min, max) => v < min ? min : (v > max ? max : v),
@@ -132,7 +126,7 @@ const Sirkey = (() => {
       const clone = Object.create(Object.getPrototypeOf(obj));
       for (const key in obj) {
         if (Object.prototype.hasOwnProperty.call(obj, key)) {
-          // 仅对需要修改的核心逻辑组 (proxy-groups, rules, proxy-providers) 执行深操作
+          // 仅对需要修改的主要配置组 (proxy-groups, rules, proxy-providers) 执行深操作
           const needsDeep = ["proxy-groups", "rules", "proxy-providers"].includes(key);
           clone[key] = needsDeep ? Utils.deepClone(obj[key], key) : obj[key];
         }
@@ -188,7 +182,7 @@ function selectBestMirror() {
   return GH_PROXY = CONSTANTS.GH.MIRRORS[1] ?? "";
 }
 
-/* ============== 资源与URL定义 (极致优化) ============== */
+/* ============== 资源与URL定义 (配置优化) ============== */
 const ICON_VAL = (f) => {
   try { return typeof f === "function" ? f() : (f ?? ""); } catch { return ""; }
 };
@@ -298,9 +292,9 @@ const URLS = {
   }
 };
 
-/* ============== 动态配置发现与智能预设 ============== */
+/* ============== 动态配置发现与预设管理 ============== */
 const Config = {
-  // 全局自动零干预开关
+  // 自动配置补全开关
   autoIntervention: true,
   // 全局自适应开关
   adaptive: true,
@@ -466,7 +460,7 @@ class ConfigBuilder {
     }
 
     if (!this._validateConfig(config)) {
-      // 全局自动零干预：验证失败时尝试自愈
+      // 验证失败时尝试补全基础配置
       if (Config.autoIntervention) {
         this._selfHeal(config);
       } else {
@@ -502,16 +496,16 @@ class ConfigBuilder {
     const scene = SceneDetector.detect(context);
     const aiOpts = Config.aiOptions;
     if (aiOpts?.enable && aiOpts.scenes?.[scene]) {
-      Logger.info("ConfigBuilder.Adaptive", `检测到场景: ${scene}, 动态调整 AI 评估权重`);
+      Logger.info("ConfigBuilder.Adaptive", `检测到场景: ${scene}, 动态调整评估权重`);
       aiOpts.scoring = { ...aiOpts.scoring, ...aiOpts.scenes[scene] };
     }
   }
 
   /**
-   * 全局自动零干预：配置自愈逻辑
+   * 配置异常检查与基础补全逻辑
    */
   static _selfHeal(config) {
-    Logger.info("ConfigBuilder.SelfHeal", "触发自动零干预自愈机制...");
+    Logger.info("ConfigBuilder.SelfHeal", "触发配置检查与补全机制...");
     config.proxies ??= [];
     config["proxy-groups"] ??= [];
     config.rules ??= [];
@@ -523,7 +517,7 @@ class ConfigBuilder {
   }
 
   /**
-   * 交付前审计：确保符合 Mihomo 官方规范 (方案三增强: Schema 校验)
+   * 交付前配置检查，确保符合 Mihomo 基础规范
    */
   static _finalAudit(config) {
     // 确保必填项
@@ -565,7 +559,7 @@ class ConfigBuilder {
     let regions = Config.regionOptions?.regions || [];
     const proxies = config.proxies || [];
     
-    // 全局自动零干预：自动发现新区域
+    // 自动配置补全：自动发现新区域
     if (Config.regionOptions?.autoDiscover || Config.autoIntervention) {
       try {
         const discovered = regionAuto.discoverRegionsFromProxies(proxies);
@@ -680,12 +674,12 @@ class ConfigBuilder {
     };
     const opts = Config.ruleOptions || {};
 
-    // 全局自动零干预：自动发现并注入规则
+    // 自动配置补全：自动发现并注入规则
     if (opts.autoDiscover || Config.autoIntervention) {
       this._autoDiscoverRules(ruleProviders, rules, opts, baseRP);
     }
 
-    // 核心内置 RuleSets
+    // 内置规则集 (RuleSets)
     const coreSets = {
       applications: { behavior: "classical", url: URLS.rulesets.applications() },
       acl4ssr_china: { behavior: "classical", url: URLS.rulesets.acl4ssr.china() },
@@ -757,7 +751,7 @@ class ConfigBuilder {
       
       let url = "", behavior = "classical", format = "text";
       
-      // 智能匹配 URL (优先从 URLS.rulesets 查找，其次从 loyalsoldier 查找)
+      // 自动匹配 URL (优先从 URLS.rulesets 查找，其次从 loyalsoldier 查找)
       if (typeof URLS.rulesets[key] === "function") {
         url = URLS.rulesets[key]();
         if (url.endsWith(".mrs")) {
@@ -777,7 +771,7 @@ class ConfigBuilder {
   }
 }
 
-/* ============== GeoIP 服务 (极致优化版) ============== */
+/* ============== GeoIP 服务 ============== */
 class GeoIPService {
   _http;
   _cache;
@@ -791,8 +785,8 @@ class GeoIPService {
   }
 
   /**
-   * 方案三：增强 GeoIP 隐私保护 (Privacy Strengthening)
-   * 智能事件驱动逻辑，管理隐私及安全风险。
+   * 增强 GeoIP 隐私保护 (Privacy Strengthening)
+   * 事件驱动逻辑，管理隐私及安全风险。
    */
   _handlePrivacyEvent(type, data) {
     const security = CentralManager.getInstance().security;
@@ -834,7 +828,7 @@ class GeoIPService {
     }
 
     if (toLookup.length > 0) {
-      // 核心优化：后台异步查询，不阻塞主线程
+      // 异步查询优化：后台执行，不阻塞主线程
       this._doAsyncLookup(toLookup);
     }
     return results;
@@ -868,7 +862,7 @@ class GeoIPService {
   }
 }
 
-/* ============== AI 智能分流与质量评估系统 (Sirkey 增强版) ============== */
+/* ============== 自适应节点分流与质量评估系统 ============== */
 
 /**
  * SceneDetector: 业务场景识别
@@ -895,7 +889,7 @@ class NetworkDetector {
 }
 
 /** 
- * NodeStatsManager: 持久化存储与节点历史分析 (增强版)
+ * NodeStatsManager: 持久化存储与节点历史分析
  */
 class NodeStatsManager {
   _cache;
@@ -994,7 +988,7 @@ class NodeStatsManager {
 }
 
 /**
- * AIEngine: 评分体系与趋势分析 (增强版)
+ * AIEngine: 评分体系与趋势分析
  */
 class AIEngine {
   _stats;
@@ -1395,7 +1389,7 @@ class RegionAutoManager {
       icon: ICON_VAL(ICONS.Proxy)
     };
 
-    // 全局自适应：注入“全球优选”组
+    // 节点筛选：根据评分注入“全球优选”节点组
     if (Config.adaptive || Config.autoIntervention) {
       const premiumNodes = Array.from(globalNodeStats.values())
         .filter(s => s.latency < 200 && s.loss < 0.01)
@@ -1441,7 +1435,7 @@ class AdBlockManager {
   }
 }
 
-/* ============== 基础工具类 (三级缓存增强版) ============== */
+/* ============== 缓存管理模块 (L1/L2/Persistent) ============== */
 class LRUCache {
   _l1 = new Map();
   _l2 = new Map();
@@ -1673,7 +1667,7 @@ class SecurityGuard {
   }
 }
 
-/* ============== 智能任务调度与内存管理器 (方案一优化) ============== */
+/* ============== 任务调度与内存管理 ============== */
 class SmartLifecycleManager {
   _tasks = new Map();
   _lastRun = new Map();
@@ -1755,19 +1749,19 @@ class HealthMonitor {
     }
   }
 
-  // 方案一：移除 setInterval，改为由 LifecycleManager 驱动
+  // 移除 setInterval，改为由 LifecycleManager 驱动
   start() { /* 已由事件驱动逻辑接管 */ }
   stop() { /* 自动清理 */ }
   
   runCheck() {
     const now = Date.now();
     if (now - this._lastCheck < this._checkInterval) return;
-    // 毫秒级健康巡检逻辑 (模拟执行)
+    // 健康巡检逻辑 (模拟执行)
     this._lastCheck = now;
   }
 }
 
-/* ============== 核心管理器 (精简版) ============== */
+/* ============== 配置管理器 ============== */
 class CentralManager {
   static _instance;
 
@@ -1796,7 +1790,7 @@ class CentralManager {
   get lruCache() { return this._lruCache; }
   get security() { return this._security; }
   
-  // 方案一：延迟加载 (Lazy Initialization)
+  // 延迟加载 (Lazy Initialization)
   get adBlockManager() { 
     this._adBlockManager ??= new AdBlockManager(this);
     return this._adBlockManager; 
@@ -1818,7 +1812,7 @@ class CentralManager {
   }
 
   processConfiguration(config, context = null) {
-    // 方案一：全自动事件驱动逻辑
+    // 触发配置处理相关维护任务
     this._lifecycle.trigger("processConfiguration");
     
     const scene = SceneDetector.detect(context);
@@ -1843,19 +1837,19 @@ class CentralManager {
     try {
       Sirkey.selectBestMirror();
       
-      // 方案一：注册事件驱动任务
+      // 注册后台维护任务
       this.lifecycle.addTask("AI_SelfCheck", () => {
-        Sirkey.Logger.info("AI.SelfCheck", "执行事件驱动 AI 模型自检...");
+        Sirkey.Logger.info("AI.SelfCheck", "执行事件驱动模型自检...");
         const nodeIds = Array.from(this.lruCache._l1.keys())
           .filter(k => k.startsWith("node_stats:"))
           .map(k => k.replace("node_stats:", ""));
         this.regionAutoManager.ai.performSelfCheck(nodeIds);
       }, 300000); // 5分钟
 
-      // 全局自动零干预：自愈监控
+      // 自动配置补全：自愈监控
       if (Sirkey.Config.autoIntervention) {
         this.lifecycle.addTask("Self_Monitoring", () => {
-          Sirkey.Logger.info("Central.Monitor", "执行自动零干预自检...");
+          Sirkey.Logger.info("Central.Monitor", "执行组件状态自检与维护...");
           if (!this.regionAutoManager.stats) this.security.performAutoRepair("stats");
           if (!this.httpClient.checkAvailability()) this.security.performAutoRepair("network");
         }, 600000); // 10分钟
@@ -1907,7 +1901,7 @@ class CentralManager {
   };
 })();
 
-/* ============== 修复后的 Main 函数 (100% 兼容同步版) ============== */
+/* ============== 主入口函数 ============== */
 function main(config) {
   if (!config || typeof config !== "object") {
     Sirkey.Logger.error("Main", "配置无效");
@@ -1918,7 +1912,7 @@ function main(config) {
     const central = Sirkey.CentralManager.getInstance();
     // 初始化
     central.initialize();
-    // 核心变更：移除 await，确保返回 Map 对象而非 Future/Promise
+    // 异步处理变更：移除 await，确保返回 Map 对象而非 Future/Promise
     return central.processConfiguration(config);
   } catch (e) {
     const msg = e?.message || "未知错误";
@@ -1935,7 +1929,7 @@ function main(config) {
   }
 }
 
-/* ============== 优化后的统一导出逻辑 ============== */
+/* ============== 模块导出定义 ============== */
 const EXPORTS = {
   main, 
   CentralManager: Sirkey.CentralManager, 
