@@ -193,8 +193,8 @@ const ICONS = (() => {
 })();
 
 const URLS = {
-  mrs: f => `https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@main/${f}.mrs`,
-  list: f => `https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@main/${f}.list`,
+  mrs: f => `https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo-lite/geosite/${f}.mrs`,
+  list: f => `https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@main/${f}.yaml`,
   geox: {
     geoip: () => "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
     geosite: () => "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
@@ -231,16 +231,19 @@ const Config = {
   dns: {
     enable: true, listen: "127.0.0.1:1053", ipv6: true, "prefer-h3": true, "use-hosts": true, "use-system-hosts": true,
     "respect-rules": true, "enhanced-mode": "fake-ip", "fake-ip-range": "198.18.0.1/16",
-    "fake-ip-filter": ["*", "+.lan", "+.local", "+.market.xiaomi.com"],
+    "fake-ip-filter": ["*", "+.lan", "+.local", "+.market.xiaomi.com", "+.msftconnecttest.com", "+.msftncsi.com", "msftconnecttest.com", "msftncsi.com", "+.xboxlive.com", "+.battlenet.com.cn", "+.wotgame.cn", "+.wggames.cn", "+.wowsgame.cn", "+.wargaming.net", "geosite:cn", "geosite:private"],
+    "default-nameserver": ["223.5.5.5", "119.29.29.29", "1.1.1.1", "8.8.8.8"],
     nameserver: ["https://223.5.5.5/dns-query", "https://119.29.29.29/dns-query", "https://8.8.8.8/dns-query"],
+    fallback: ["https://1.1.1.1/dns-query", "https://9.9.9.9/dns-query"],
+    "fallback-filter": { geoip: true, "geoip-code": "CN", ipcidr: ["240.0.0.0/4"], domain: ["+.google.com", "+.facebook.com", "+.youtube.com", "+.githubusercontent.com"] },
     "proxy-server-nameserver": ["https://223.5.5.5/dns-query", "https://119.29.29.29/dns-query", "https://8.8.8.8/dns-query"],
     "nameserver-policy": { "geosite:private": "system", "geosite:cn,steam@cn,category-games@cn,microsoft@cn,apple@cn": ["119.29.29.29", "223.5.5.5"] }
   },
   services: [
-    { id:"openai", rule:["DOMAIN-SUFFIX,openai.com,国外AI","RULE-SET,ai,国外AI"], name:"国外AI", icon: ICONS.ChatGPT, ruleProvider:{ name:"ai", url: URLS.rulesets.ai(), format: "mrs", behavior: "domain" } },
+    { id:"openai", rule:["DOMAIN-SUFFIX,openai.com,国外AI","RULE-SET,ai,国外AI"], name:"国外AI", icon: ICONS.ChatGPT, ruleProvider:{ name:"ai", url: URLS.rulesets.ai(), behavior: "domain" } },
     { id:"youtube", rule:["GEOSITE,youtube,YouTube"], name:"YouTube", icon: ICONS.YouTube },
-    { id:"biliintl", rule:["GEOSITE,biliintl,哔哩哔哩东南亚"], name:"哔哩哔哩东南亚", icon: ICONS.Bilibili3, proxiesOrder:["默认节点","直连"] },
-    { id:"bahamut", rule:["GEOSITE,bahamut,巴哈姆特"], name:"巴哈姆特", icon: ICONS.Bahamut, proxiesOrder:["默认节点","直连"] },
+    { id:"biliintl", rule:["GEOSITE,biliintl,哔哩哔哩东南亚"], name:"哔哩哔哩东南亚", icon: ICONS.Bilibili3, proxiesOrder:["默认节点","DIRECT"] },
+    { id:"bahamut", rule:["GEOSITE,bahamut,巴哈姆特"], name:"巴哈姆特", icon: ICONS.Bahamut, proxiesOrder:["默认节点","DIRECT"] },
     { id:"disney", rule:["GEOSITE,disney,Disney+"], name:"Disney+", icon: ICONS.DisneyPlus },
     { id:"netflix", rule:["GEOSITE,netflix,NETFLIX"], name:"NETFLIX", icon: ICONS.Netflix },
     { id:"tiktok", rule:["GEOSITE,tiktok,Tiktok"], name:"Tiktok", icon: ICONS.TikTok },
@@ -254,8 +257,8 @@ const Config = {
     { id:"whatsapp", rule:["GEOSITE,whatsapp,WhatsApp"], name:"WhatsApp", icon: ICONS.Telegram },
     { id:"line", rule:["GEOSITE,line,Line"], name:"Line", icon: ICONS.Line },
     { id:"games", rule:["GEOSITE,category-games@cn,国内网站","GEOSITE,category-games,游戏专用"], name:"游戏专用", icon: ICONS.Game },
-    { id:"tracker", rule:["GEOSITE,tracker,跟踪分析"], name:"跟踪分析", icon: ICONS.Reject, proxies:["REJECT","直连","默认节点"] },
-    { id:"ads", rule:["GEOSITE,category-ads-all,广告过滤","RULE-SET,ads,广告过滤"], name:"广告过滤", icon: ICONS.Advertising, proxies:["REJECT","直连","默认节点"], ruleProvider:{ name:"ads", url: URLS.rulesets.ads(), format:"mrs", behavior:"domain" } },
+    { id:"tracker", rule:["GEOSITE,tracker,跟踪分析"], name:"跟踪分析", icon: ICONS.Reject, proxies:["REJECT","DIRECT","默认节点"] },
+    { id:"ads", rule:["GEOSITE,category-ads-all,广告过滤","RULE-SET,ads,广告过滤"], name:"广告过滤", icon: ICONS.Advertising, proxies:["REJECT","DIRECT","默认节点"], ruleProvider:{ name:"ads", url: URLS.rulesets.ads(), behavior:"domain" } },
     { id:"apple", rule:["GEOSITE,apple-cn,苹果服务"], name:"苹果服务", icon: ICONS.Apple2 },
     { id:"google", rule:["GEOSITE,google,谷歌服务"], name:"谷歌服务", icon: ICONS.GoogleSearch },
     { id:"microsoft", rule:["GEOSITE,microsoft@cn,国内网站","GEOSITE,microsoft,微软服务"], name:"微软服务", icon: ICONS.Microsoft },
@@ -263,18 +266,19 @@ const Config = {
   ],
   system: {
     "allow-lan": true, mode: "rule", "unified-delay": true, "tcp-concurrent": true, "geodata-mode": true,
-    sniffer: { enable: true, "force-dns-mapping": true, "parse-pure-ip": false, "override-destination": true,
+    "find-process-mode": "always", "global-client-fingerprint": "chrome",
+    sniffer: { enable: true, "force-dns-mapping": true, "parse-pure-ip": true, "override-destination": true,
       sniff: { TLS: { ports: [443, 8443] }, HTTP: { ports: [80, "8080-8880"] }, QUIC: { ports: [443, 8443] } }
     },
     "geox-url": { geoip: URLS.geox.geoip(), geosite: URLS.geox.geosite(), mmdb: URLS.geox.mmdb(), asn: URLS.geox.asn() }
   },
   common: {
-    ruleProvider: { type: "http", format: "mrs", interval: 86400 },
+    ruleProvider: { type: "http", interval: 86400 },
     proxyGroup: { interval: 300, timeout: 3000, url: "https://cp.cloudflare.com/generate_204", lazy: true },
     defaultProxyGroups: [
-      { name:"下载软件", icon: ICONS.Download, proxies:["直连","REJECT","默认节点","国内网站"] },
+      { name:"下载软件", icon: ICONS.Download, proxies:["DIRECT","REJECT","默认节点","国内网站"] },
       { name:"其他外网", icon: ICONS.StreamingNotCN, proxies:["默认节点","国内网站"] },
-      { name:"国内网站", icon: ICONS.StreamingCN, proxies:["直连","默认节点"] }
+      { name:"国内网站", icon: ICONS.StreamingCN, proxies:["DIRECT","默认节点"] }
     ],
     postRules: ["GEOSITE,private,DIRECT", "GEOIP,private,DIRECT,no-resolve", "GEOSITE,cn,国内网站", "GEOIP,cn,国内网站,no-resolve", "MATCH,其他外网"]
   }
@@ -363,16 +367,8 @@ class ConfigBuilder {
 
   static _ensureSystemProxies(config) {
     if (!Array.isArray(config.proxies)) config.proxies = [];
-    if (!config.proxies.some(p => p?.name === "直连")) config.proxies.push({ name: "直连", type: "direct" });
-    
-    // 检查是否已经存在名为 REJECT 的代理（包括内置的）
-    // Mihomo 内核通常内置了 REJECT，如果配置中再次添加同名代理会报错
-    const hasReject = config.proxies.some(p => p?.name?.toUpperCase() === "REJECT");
-    if (!hasReject) {
-      // 只有当配置中确实没有 REJECT 时才添加，且优先使用内置的 REJECT
-      // 注意：大部分环境下不需要在 proxies 列表中显式添加 REJECT，因为它由内核提供
-      // 但为了确保策略组引用不失效，我们只在不存在时添加一个虚拟占位
-    }
+    // Mihomo 2025: 不再显式向 proxies 数组添加内置的 DIRECT/REJECT
+    // 这些类型是内置的，直接在策略组引用即可
   }
 
   static _buildProxyGroups(config, regionGroupNames, regionProxyGroups, otherProxyNames) {
@@ -381,12 +377,12 @@ class ConfigBuilder {
       ...groupBase,
       name: "默认节点",
       type: "select",
-      proxies: [...regionGroupNames, "直连"],
+      proxies: [...regionGroupNames, "DIRECT"],
       icon: ICON_VAL(ICONS.Proxy)
     }];
 
     const services = Array.isArray(Config?.services) ? Config.services : [];
-    const defaultOrder = ["默认节点", "国内网站", "直连", "REJECT"];
+    const defaultOrder = ["默认节点", "国内网站", "DIRECT", "REJECT"];
     
     for (const svc of services) {
       try {
@@ -440,7 +436,7 @@ class ConfigBuilder {
     const ruleProviders = {}, rules = [], baseRP = { type: "http", interval: 86400 };
     const opts = Config.ruleOptions || {};
 
-    ruleProviders.applications = { ...baseRP, behavior: "classical", format: "text", url: URLS.rulesets.applications(), path: "./ruleset/applications.list" };
+    ruleProviders.applications = { ...baseRP, behavior: "classical", format: "yaml", url: URLS.rulesets.applications(), path: "./ruleset/applications.yaml" };
     if (Array.isArray(Config.preRules)) rules.push(...Config.preRules);
 
     (Config.services || []).forEach(svc => {
@@ -448,12 +444,13 @@ class ConfigBuilder {
       if (svc.rule) rules.push(...svc.rule);
       const rp = svc.ruleProvider;
       if (rp?.name && !ruleProviders[rp.name]) {
+        const isMrs = rp.url.endsWith(".mrs");
         ruleProviders[rp.name] = { 
           ...baseRP, 
           behavior: rp.behavior || "domain", 
-          format: rp.format || "mrs", 
+          format: isMrs ? "mrs" : "yaml",
           url: rp.url, 
-          path: `./ruleset/${rp.name}.${rp.format || "mrs"}` 
+          path: `./ruleset/${rp.name}.${isMrs ? "mrs" : "yaml"}` 
         };
       }
     });
@@ -465,7 +462,14 @@ class ConfigBuilder {
       const ads = Config.services?.find(s => s.id === "ads");
       if (ads?.ruleProvider) {
         const rp = ads.ruleProvider;
-        ruleProviders.adblock_combined = { ...baseRP, behavior: rp.behavior || "domain", format: rp.format || "mrs", url: rp.url, path: `./ruleset/adblock_combined.${rp.format || "mrs"}` };
+        const isMrs = rp.url.endsWith(".mrs");
+        ruleProviders.adblock_combined = { 
+          ...baseRP, 
+          behavior: rp.behavior || "domain", 
+          format: isMrs ? "mrs" : "yaml",
+          url: rp.url, 
+          path: `./ruleset/adblock_combined.${isMrs ? "mrs" : "yaml"}` 
+        };
       }
     }
 
@@ -517,9 +521,10 @@ class RegionAutoManager {
 
   buildRegionGroups(config, regions) {
     const proxies = config.proxies || [], used = new Set();
+    const defaultUrl = Config.common?.proxyGroup?.url || "https://cp.cloudflare.com/generate_204";
     const regionProxyGroups = regions.map(r => {
       const names = proxies.filter(p => !used.has(p.name) && r.regex.test(p.name)).map(p => { used.add(p.name); return p.name; });
-      return names.length ? { name: r.name, type: "url-test", interval: 300, tolerance: 50, icon: ICON_VAL(r.icon), url: Config.common?.proxyGroup?.url, proxies: names } : null;
+      return names.length ? { name: r.name, type: "url-test", interval: 300, tolerance: 50, icon: ICON_VAL(r.icon), url: defaultUrl, proxies: names } : null;
     }).filter(Boolean);
     const otherProxyNames = proxies.filter(p => !used.has(p.name)).map(p => p.name);
     return { regionProxyGroups, otherProxyNames };
@@ -533,7 +538,7 @@ class AdBlockManager {
     this.cache = new LRUCache({ maxSize: 256, ttl: CONSTANTS.ADBLOCK.RULE_TTL });
     this.lastUpdate = 0;
     this.sources = [
-      { name: "mihomo_mrs", url: URLS.rulesets.ads(), type: "mrs" }
+      { name: "mihomo_ads", url: URLS.rulesets.ads(), type: "mrs" }
     ];
   }
 
@@ -550,14 +555,14 @@ class AdBlockManager {
   async fetchAndMergeRules() {
     const fetchers = this.sources.map(src => () => this.fetchSource(src).catch(() => null));
     const results = await Utils.asyncPool(fetchers, 2);
-    let mrsUrl = null;
+    let adsUrl = null;
 
     results.forEach((res, i) => {
       const src = this.sources[i];
-      if (res && src.type === "mrs") mrsUrl = src.url;
+      if (res && src.type === "mrs") adsUrl = src.url;
     });
 
-    if (mrsUrl) this.cache.set("adblock_mrs_url", mrsUrl, CONSTANTS.ADBLOCK.RULE_TTL);
+    if (adsUrl) this.cache.set("adblock_ads_url", adsUrl, CONSTANTS.ADBLOCK.RULE_TTL);
   }
 
   async fetchSource(src) {
@@ -566,7 +571,7 @@ class AdBlockManager {
     
     try {
       const resp = await this.central._safeFetch(src.url, { headers: { "User-Agent": CONSTANTS.UA } });
-      const res = src.type === "text" ? await resp.text() : "mrs";
+      const res = src.type === "text" || src.type === "mrs" ? "mrs" : "yaml";
       this.cache.set(`src:${src.name}`, res, CONSTANTS.ADBLOCK.RULE_TTL);
       return res;
     } catch (e) {
@@ -576,11 +581,11 @@ class AdBlockManager {
   }
 
   injectRuleProvider(ruleProviders) {
-    const mrsUrl = this.cache.get("adblock_mrs_url");
-    if (mrsUrl) {
+    const adsUrl = this.cache.get("adblock_ads_url");
+    if (adsUrl) {
       Utils.safeSet(ruleProviders, "adblock_combined", {
         type: "http", interval: 86400, behavior: "domain", format: "mrs",
-        url: mrsUrl, path: "./ruleset/adblock_combined.mrs"
+        url: adsUrl, path: "./ruleset/adblock_combined.mrs"
       });
     }
   }
@@ -1046,7 +1051,6 @@ class NodeManager extends EventEmitter {
     this.currentNode = null; 
     this.nodeQuality = new Map(); 
     this.switchCooldown = new Map(); 
-    this.nodeHistory = new Map(); 
     this.nodeSuccess = new Map(); 
   }
 
@@ -1061,18 +1065,9 @@ class NodeManager extends EventEmitter {
     return Utils.clamp(c.BASE * (1 + (s / 100) * 0.9), c.MIN, c.MAX); 
   }
 
-  _updateNodeHistory(id, score) {
-    const s = Utils.clamp(Number(score) || 0, 0, 100);
-    const h = this.nodeHistory.get(id) || [];
-    h.push({ timestamp: Utils.now(), score: s });
-    if (h.length > CONSTANTS.POOL.WINDOW_SIZE) h.shift();
-    this.nodeHistory.set(id, h);
-  }
-
   updateNodeQuality(id, delta) {
     const ns = Utils.clamp((this.nodeQuality.get(id) || 0) + Utils.clamp(Number(delta) || 0, -20, 20), 0, 100);
     this.nodeQuality.set(id, ns);
-    this._updateNodeHistory(id, ns);
   }
 }
 
@@ -1119,7 +1114,7 @@ function main(config) {
 
 /* ============== 优化后的统一导出逻辑 ============== */
 const EXPORTS = {
-  main, CentralManager, ConfigBuilder,
+  main, CentralManager, ConfigBuilder, NodeManager,
   buildConfigForParser: ConfigBuilder.build.bind(ConfigBuilder),
   RegionAutoManager, LRUCache, NodeScorer, Utils, DataMasker, CONSTANTS, Config
 };
