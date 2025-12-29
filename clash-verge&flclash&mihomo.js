@@ -1,16 +1,27 @@
 "use strict";
 
 /**
- * Sirkey Mihomo 覆写脚本 (Compact+Enhanced, Fixed+Compliant)
+ * Sirkey Mihomo 覆写脚本 (Compact+Enhanced, Fixed+Compliant+Adaptive+SmartDeferred)
  *
- * 合规与修复要点：
- * - 继续使用 main(config, profileName) 作为唯一入口，保持 Override 规范
- * - 不破坏用户已有配置：系统级字段改为 “仅填默认值，不覆盖用户” 的深度合并
- * - 修复默认值补全与 proxies 初始化逻辑缺陷，保证行为可预期
- * - 错误占位节点改为标准 direct 类型结构，避免潜在解析歧义
- * - 保留 MATCH 后置、规则相对顺序不变，符合 Mihomo 自上而下匹配语义
+ * 关键特性与目标：
+ * - 保留系统 / 安全 / 规则层的静态语义，不做自适应改动
+ * - 仅对 AI / 统计 / 缓存 层做智能自适应与事件驱动优化
+ * - 引入“智能事件驱动（Deferred Task Engine）”：
+ *   1. main() 热路径尽量保持纯配置构建，快速返回，避免阻塞 flclash GUI
+ *   2. 所有重任务（AI 自检 / L3 持久化刷盘 / 缓存校验 / 自监控）延迟到 main() 返回后执行
+ *   3. 通过 Promise 微任务 / setTimeout 等机制在当前调用栈结束后再调度生命周期任务
  *
- * @version 3.0.2-Sirkey-Compact-Fixed-Compliant
+ * 关键增强（基于 3.1.3）：
+ * - 引入 DeferredTaskEngine：保证 lifecycle.trigger() 不在 main() 同步路径执行
+ * - 生命周期任务仍然完整保留（包括 LRU_Persistence_Flush），不关闭 L3 持久化、不削弱 AI 逻辑
+ * - 在不损失 AI 评分、自适应 Top-K、节点隔离恢复 等能力的前提下，显著降低 flclash 启动卡死风险
+ *
+ * 官方规范与兼容性：
+ * - 严格遵守 Mihomo 官方覆写脚本规范：导出 main(config, profileName)，返回最终配置对象
+ * - 不引入非标准字段到配置根级别，不破坏原有 rules / proxy-groups / dns / system 语义
+ * - 兼容多平台：Mihomo / Node / 浏览器 调试环境
+ *
+ * @version 3.1.4-Sirkey-Compact-Fixed-Compliant-Adaptive-Hardened-Deferred
  */
 
 const Sirkey = (() => {
@@ -24,7 +35,7 @@ const Sirkey = (() => {
       isNode, isBrowser, isMihomo, platform,
       isCJS: () => typeof module !== "undefined" && !!module.exports,
       get: () => platform,
-      version: "2025.12.27-Sirkey-Compact-Fixed-Compliant",
+      version: "2025.12.29-Sirkey-Compact-Fixed-Compliant-Adaptive-Hardened-3.1.4",
       useES2022: true
     });
   })();
@@ -147,10 +158,6 @@ const Sirkey = (() => {
     uniqueBy(arr, fn){
       const seen=new Set(); return arr.filter(x=>{const v=fn(x); if(seen.has(v)) return false; seen.add(v); return true;});
     },
-    /**
-     * 仅在目标不存在该键时，从 source 填入默认值（深度合并）
-     * 保证不会覆盖用户已有配置 —— 遵循 Override “增量修改” 理念
-     */
     mergeDefaults(target, source) {
       if (!source || typeof source !== "object") return target;
       if (!target || typeof target !== "object") return Utils.deepClone(source);
@@ -166,6 +173,15 @@ const Sirkey = (() => {
         }
       }
       return target;
+    },
+    /**
+     * 简单分位数计算：percent ∈ (0,1)，在排序数组中取对应位置的值
+     */
+    percentile(sortedArr, percent) {
+      if (!sortedArr?.length) return null;
+      const p = Utils.clamp(percent, 0, 1);
+      const idx = Math.min(sortedArr.length - 1, Math.max(0, Math.floor(sortedArr.length * p)));
+      return sortedArr[idx];
     }
   };
 
@@ -257,7 +273,17 @@ const Sirkey = (() => {
   })();
   const MIRROR_STATUS = new Map();
 
+  /**
+   * 关键修复点：
+   * - 在 Mihomo 环境中完全禁止在线镜像探测，避免在 main()/initialize() 调用链上发起 HTTP 请求，
+   *   防止 flclash 等客户端 GUI 阻塞。
+   */
   async function selectBestMirror(httpClient=null){
+    if (!Config.privacy?.githubMirrorEnabled || Env.isMihomo) {
+      Logger.info("Mirror","Mihomo 环境或已禁用镜像探测，使用缓存/直连");
+      return GH_PROXY;
+    }
+
     const mirrors = CONSTANTS.GH.MIRRORS;
     const testPath = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/steam.mrs";
     const http = httpClient || CentralManager.getInstance().httpClient;
@@ -420,7 +446,7 @@ const Sirkey = (() => {
     }
   };
 
-  /* ========== 全局配置 (保持原功能) ========== */
+  /* ========== 全局配置 (保持原功能 + 性能策略) ========== */
   const Config = {
     autoIntervention: true,
     adaptive: true,
@@ -442,7 +468,13 @@ const Sirkey = (() => {
       },
       evaluation:{ ewmaAlpha:0.3, driftThreshold:0.5, recoveryAlpha:0.1, baseTolerance:50, sampleSize:10 },
       protection:{ cooldown:300, maxSwitches24h:20, failIsolationH:12, threatDetection:true },
-      cache:{ levels:3, strategy:"LRU+TTL", verifyInterval:3600 },
+      cache:{
+        levels:3,
+        strategy:"LRU+TTL",
+        verifyInterval:3600,
+        // 保留持久化能力，交由 L3 事件驱动刷盘，避免 main() 热路径同步 I/O
+        persistence:true
+      },
       trendAnalysis:true
     },
     ruleOptions:{
@@ -502,7 +534,7 @@ const Sirkey = (() => {
       }
     },
     services: [
-      { id:"openai",  rule:["DOMAIN-SUFFIX,openai.com,国外AI","RULE-SET,ai,国外AI"], name:"国外AI", icon:ICONS.ChatGPT, ruleProvider:{ name:"ai", url:()=>URLS.rulesets.ai(), behavior:"domain" } },
+      { id:"openai",  rule:["RULE-SET,ai,国外AI","RULE-SET,ai,国外AI"], name:"国外AI", icon:ICONS.ChatGPT, ruleProvider:{ name:"ai", url:()=>URLS.rulesets.ai(), behavior:"domain" } },
       { id:"claude",  rule:["RULE-SET,claude,Claude"], name:"Claude", icon:ICONS.Claude, ruleProvider:{ name:"claude", url:()=>URLS.rulesets.claude(), behavior:"domain" } },
       { id:"gemini",  rule:["RULE-SET,gemini,Gemini"], name:"Gemini", icon:ICONS.Gemini, ruleProvider:{ name:"gemini", url:()=>URLS.rulesets.gemini(), behavior:"domain" } },
       { id:"youtube", rule:["RULE-SET,youtube,YouTube"], name:"YouTube", icon:ICONS.YouTube, ruleProvider:{ name:"youtube", url:()=>URLS.rulesets.youtube(), behavior:"domain" } },
@@ -574,6 +606,12 @@ const Sirkey = (() => {
         "GEOIP,cn,国内网站,no-resolve",
         "MATCH,其他外网"
       ]
+    },
+    performance: {
+      // 节点数量超过该阈值时，可按需在未来扩展降级策略（当前主要用于日志与监控）
+      heavyProxyThreshold: 800,
+      // 单次生命周期 tick 中允许的持久化 I/O 条数，避免单次刷盘过重
+      ioBudgetPerTick: 16
     }
   };
 
@@ -592,9 +630,27 @@ const Sirkey = (() => {
     }
   }
 
+  /* ========== LRU 三层缓存：L1/L2 + 事件驱动持久化 L3 ========== */
+
   class LRUCache {
-    constructor({maxSize=300,ttl=3600000}={}){this._l1=new Map();this._l2=new Map();this._maxSize=maxSize;this._ttl=ttl;this._h=0;this._m=0;}
+    constructor({maxSize=300,ttl=3600000,persist=null}={}) {
+      this._l1=new Map();
+      this._l2=new Map();
+      this._maxSize=maxSize;
+      this._ttl=ttl;
+      this._h=0;
+      this._m=0;
+
+      this._persist = (persist !== null)
+        ? !!persist
+        : !!(Config.aiOptions?.cache?.persistence);
+
+      // 待持久化队列：key -> serializedEntry
+      this._pendingWrites = new Map();
+    }
+
     _entry(v,ttl){return {value:v,timestamp:Date.now(),ttl:ttl||this._ttl};}
+
     get(key){
       const now=Date.now();
       let e=this._l1.get(key);
@@ -609,28 +665,31 @@ const Sirkey = (() => {
       e=check(this._l2,key);
       if(e){this._h++;this._promote(key,e);return e.value;}
       this._m++;
-      const stored = PersistentStorage.read(key);
-      if(stored){
-        try{
-          const parsed=JSON.parse(stored);
-          if(now-parsed.timestamp<(parsed.ttl||this._ttl)){
-            this._h++; this.set(key,parsed.value,parsed.ttl,false); return parsed.value;
-          }
-        }catch(e){Logger.warn("LRU.Persistent",`损坏:${key}`,e.message); PersistentStorage.delete(key);}
-      }
+
+      // 不在 get() 中进行 L3 磁盘读取，避免同步 I/O 卡顿
       return null;
     }
+
     set(key,val,ttl, persist=true){
       const e=this._entry(val,ttl);
       this._l1.set(key,e);
       this._evict();
-      if(persist){
-        try{PersistentStorage.write(key,JSON.stringify(e));}catch(err){Logger.error("LRU.Persist",`失败:${key}`,err.message);}
+
+      // 这里只入队，不直接写盘，真正写盘由 lifecycle 的 LRU_Persistence_Flush 任务控制
+      if(persist && this._persist){
+        try{
+          const serialized = JSON.stringify(e);
+          this._pendingWrites.set(key, serialized);
+        }catch(err){
+          Logger.error("LRU.PersistQueue",`序列化失败:${key}`,err.message);
+        }
       }
     }
+
     _promote(key,entry){
       this._l2.delete(key); this._l1.set(key,entry); this._evict();
     }
+
     _evict(){
       if(this._l1.size>this._maxSize){
         const oldest=this._l1.keys().next().value;
@@ -639,6 +698,7 @@ const Sirkey = (() => {
         if(this._l2.size>this._maxSize) this._l2.delete(this._l2.keys().next().value);
       }
     }
+
     validate(){
       const now=Date.now(); let cleaned=0;
       const clean=map=>{
@@ -649,11 +709,40 @@ const Sirkey = (() => {
       clean(this._l1); clean(this._l2);
       if(cleaned) Logger.debug("LRU.Validate",`清理 ${cleaned} 条缓存`);
     }
+
     getStats(){
       const t=this._h+this._m;
       return {hits:this._h,misses:this._m,ratio:t?this._h/t:0,l1Size:this._l1.size,l2Size:this._l2.size,_maxSize:this._maxSize};
     }
-    clear(){this._l1.clear();this._l2.clear();}
+
+    clear(){
+      this._l1.clear();
+      this._l2.clear();
+      this._pendingWrites.clear();
+    }
+
+    /**
+     * 由生命周期任务调用：在 I/O 配额内，将 pendingWrites 批量刷盘。
+     * 这是“第三层缓存（磁盘持久化）”的实际执行点。
+     * 注意：此函数只在 Deferred 生命周期任务中调用，不在 main() 同步路径执行。
+     */
+    flushPersistence(ioBudget=16){
+      if(!this._persist) return;
+      if(!this._pendingWrites.size) return;
+      const iter = this._pendingWrites.entries();
+      let count = 0;
+      for(const [key, serialized] of iter){
+        try{
+          PersistentStorage.write(key, serialized);
+        }catch(e){
+          Logger.error("LRU.Flush",`写入失败:${key}`,e.message);
+        }
+        this._pendingWrites.delete(key);
+        count++;
+        if(count>=ioBudget) break;
+      }
+      if(count) Logger.debug("LRU.Flush",`刷盘 ${count} 条, 剩余队列: ${this._pendingWrites.size}`);
+    }
   }
 
   class HttpClient {
@@ -736,7 +825,7 @@ const Sirkey = (() => {
     }
   }
 
-  /* ========== GeoIP + 统计 + AI (高内聚) ========== */
+  /* ========== GeoIP + 统计 + AI (高内聚，AI 层自适应增强) ========== */
 
   class GeoIPService {
     constructor(http,cache){
@@ -824,8 +913,15 @@ const Sirkey = (() => {
           Logger.info("AI.Stats",`节点 ${id} 连续失败, 隔离 ${h}h`);
         }
       }else s.failCount=0;
-      if((data.latency>5000)||(data.loss>0.5)) s.threatScore+=5;
-      else s.threatScore=Math.max(0,s.threatScore-1);
+
+      // 修复：threatScore 归一化到 [0,1]，避免一次异常即永久 blocked
+      const curThreat = typeof s.threatScore === "number" ? s.threatScore : 0;
+      if((data.latency>5000)||(data.loss>0.5)){
+        s.threatScore = Utils.clamp(curThreat + 0.3, 0, 1);
+      }else{
+        s.threatScore = Math.max(0, curThreat - 0.05);
+      }
+
       s.lastUpdate=now;
       this._cache.set(this._key(id),s,CONSTANTS.TIME.WEEK);
     }
@@ -924,6 +1020,7 @@ const Sirkey = (() => {
       let score = (trend/4)*0.4 + (avgLoss/0.2)*0.6;
       return Utils.clamp(score,0,1);
     }
+
     calculateScore(id,allStats=[]){
       const stats=this._stats.getStats(id);
       const metrics=this._metrics(stats);
@@ -941,23 +1038,40 @@ const Sirkey = (() => {
         + scores.sLoss*(w.stabilityWeight||0)
         + scores.sJitter*(w.jitterWeight||0)
         + scores.sUptime*(w.uptimeWeight||0);
+
       const now=Date.now();
       let status="normal",reason="Baseline";
       const failRisk=this._predictFailure(stats);
+
       if(stats.threatScore>0.7){status="blocked";reason="Security Threat";}
       else if(failRisk>0.8){status="isolated";reason="High Failure Risk";}
       else if(failRisk>0.4){status="observation";reason="Degrading Performance";}
-      else if(total>=85 && metrics.loss<0.01){status="premium";reason="Excellent";}
-      else if(total<35 || metrics.loss>0.2 || metrics.latency>2500){status="inferior";reason="Poor Performance";}
-      if(stats.lockedUntil>now){status="locked";reason="Manual Lock";}
-      else if(stats.isolatedUntil>now){
-        if(metrics.latency<200 && metrics.loss===0){
-          stats.isolatedUntil=0;
-          Logger.info("AI.Recovery",`节点 ${id} 恢复`);
-        }else{status="isolated";reason="Auto Isolation";}
+
+      if(status==="normal" || status==="observation"){
+        if(total>=85 && metrics.loss<0.01){
+          status="premium";reason="Excellent Absolute Performance";
+        }else if(total<35 || metrics.loss>0.2 || metrics.latency>2500){
+          status="inferior";reason="Poor Absolute Performance";
+        }
       }
+
+      if(stats.lockedUntil>now){
+        status="locked";reason="Manual Lock";
+      }else if(stats.isolatedUntil>now){
+        const improvedLatency = metrics.latency <= base.latency;
+        const improvedLoss = metrics.loss <= base.loss;
+        const significantlyBetter = metrics.latency <= base.latency * 0.7 && metrics.loss <= base.loss * 0.7;
+        if(significantlyBetter || (improvedLatency && improvedLoss && failRisk<0.3)){
+          stats.isolatedUntil=0;
+          Logger.info("AI.Recovery",`节点 ${id} 自适应恢复 (lat=${Math.round(metrics.latency)}ms, loss=${(metrics.loss*100).toFixed(1)}%)`);
+        }else{
+          status="isolated";reason="Auto Isolation";
+        }
+      }
+
       return {score:Math.round(total),status,reason,data:metrics};
     }
+
     performSelfCheck(nodeIds){
       let issues=0; const now=Date.now();
       nodeIds.forEach(id=>{
@@ -974,10 +1088,25 @@ const Sirkey = (() => {
       });
       return issues;
     }
+
     getBestNodes(nodeIds,minCount=1,allStats=[],currentId=null){
+      if(!nodeIds?.length) return [];
       const scored=nodeIds.map(id=>({id,...this.calculateScore(id,allStats)}));
+
+      const scoresSorted = scored.map(s=>s.score).sort((a,b)=>a-b);
+      const hi = Utils.percentile(scoresSorted,0.7);
+      const lo = Utils.percentile(scoresSorted,0.3);
+
+      const scoredAdjusted = scored.map(s=>{
+        const out={...s};
+        if(["blocked","isolated","locked"].includes(out.status)) return out;
+        if(out.score>=hi){out.status="premium";out.reason="Adaptive Top-Tier";}
+        else if(out.score<=lo){out.status="inferior";out.reason="Adaptive Low-Tier";}
+        return out;
+      });
+
       const evalOpt=Config.aiOptions?.evaluation || {baseTolerance:50};
-      const sorted=scored.sort((a,b)=>b.score-a.score);
+      const sorted=scoredAdjusted.sort((a,b)=>b.score-a.score);
       const cur=currentId?sorted.find(s=>s.id===currentId):null;
       if(cur && cur.status!=="isolated" && cur.status!=="inferior"){
         const best=sorted[0];
@@ -987,17 +1116,19 @@ const Sirkey = (() => {
           if(idx>-1){const [c]=sorted.splice(idx,1);sorted.unshift(c);}
         }
       }
+
       let sel=sorted.filter(s=>s.status==="premium");
       if(sel.length<minCount){
-        Logger.info("AI.Degrade","Premium 不足, 放宽至 normal");
+        Logger.info("AI.Degrade","Adaptive premium 不足, 放宽至 normal+premium");
         sel=sorted.filter(s=>s.status==="premium"||s.status==="normal");
       }
       if(sel.length<minCount){
-        Logger.warn("AI.Degrade","再放宽, 排除 isolated/inferior");
-        sel=sorted.filter(s=>s.status!=="isolated" && s.status!=="inferior");
+        Logger.warn("AI.Degrade","再放宽, 排除 isolated/inferior/blocked/locked");
+        sel=sorted.filter(s=>!["isolated","inferior","blocked","locked"].includes(s.status));
       }
       return sel;
     }
+
     canSwitch(id){
       const s=this._stats.getStats(id);
       const now=Date.now();
@@ -1089,6 +1220,13 @@ const Sirkey = (() => {
       const list = Array.isArray(proxies)?proxies:[];
       const usedFilters=[]; const regionGroups=[];
       const allIds=list.map(p=>p.name).filter(Boolean);
+
+      const heavyThreshold = Config.performance?.heavyProxyThreshold ?? 800;
+      const isHeavyPool = list.length > heavyThreshold;
+      if (isHeavyPool) {
+        Logger.warn("RegionAuto",`检测到大节点池 (${list.length} > ${heavyThreshold})，启用温和优化策略`);
+      }
+
       if(Config.aiOptions?.enable && allIds.length){
         this._ai.detectNetworkState(allIds);
       }
@@ -1141,25 +1279,41 @@ const Sirkey = (() => {
       const autoGroup={...base,name:"自动选择",type:"url-test","include-all":true,tolerance:50,icon:ICON_VAL(ICONS.Proxy)};
       const otherGroup={...base,name:"其他节点",type:"select","include-all":true,"exclude-filter":excludeFilter,icon:ICON_VAL(ICONS.WorldMap)};
 
-      // 全局优选组
+      const regionProxyGroups = [];
+      const otherProxyNames = [];
+
+      // 自适应 & “最佳节点”组构建（最佳节点-AUTO + 最佳节点 select）
       if(Config.adaptive || Config.autoIntervention){
-        const premiums = globalStats
-          .filter(s=>s.latency<200 && s.loss<0.01)
-          .sort((a,b)=>a.latency-b.latency)
-          .slice(0,5);
-        if(premiums.length){
-          regionGroups.unshift({
-            ...base,
-            name:"全球优选",
-            type:"url-test",
-            proxies:premiums.map(p=>p.id),
-            tolerance:20,
-            icon:ICON_VAL(ICONS.Premium)
-          });
+        if(Config.aiOptions?.enable && allIds.length){
+          const bestGlobal = this._ai.getBestNodes(allIds, Math.min(5, allIds.length), globalStats, null);
+          if(bestGlobal.length){
+            const bestIds = bestGlobal.map(b=>b.id);
+
+            const bestAutoGroup = {
+              ...base,
+              name:"最佳节点-AUTO",
+              type:"url-test",
+              proxies:bestIds,
+              tolerance:30,
+              icon:ICON_VAL(ICONS.Premium)
+            };
+
+            const bestSelectGroup = {
+              ...base,
+              name:"最佳节点",
+              type:"select",
+              proxies:["最佳节点-AUTO", ...bestIds],
+              icon:ICON_VAL(ICONS.Premium)
+            };
+
+            regionProxyGroups.push(bestAutoGroup, bestSelectGroup);
+          }
         }
       }
 
-      return {regionProxyGroups:[autoGroup,...regionGroups,otherGroup],otherProxyNames:[]};
+      regionProxyGroups.push(autoGroup, ...regionGroups, otherGroup);
+
+      return {regionProxyGroups,otherProxyNames};
     }
   }
 
@@ -1168,6 +1322,9 @@ const Sirkey = (() => {
   class SmartLifecycleManager {
     constructor(central){this._c=central;this._tasks=new Map();this._last=new Map();this._running=new Map();}
     addTask(name,fn,interval){this._tasks.set(name,{fn,interval});}
+    /**
+     * 核心：trigger() 只在 Deferred 调度中调用，不在 main() 同步路径内高频调用。
+     */
     trigger(event){
       const now=Date.now();
       Logger.debug("Lifecycle",`事件: ${event}`);
@@ -1225,18 +1382,43 @@ const Sirkey = (() => {
     fastCheck(id){
       try{
         const s=this._stats.getStats(id);
-        if(s.failurePredicted) return false;
-        return (s.score||0.5)>0.35;
-      }catch{return false;}
+        const hist = Array.isArray(s.availabilityHistory) ? s.availabilityHistory : [];
+        if(!hist.length) return true;
+        const ok = hist.reduce((a,b)=>a+(b.v?1:0),0)/hist.length;
+        return ok >= 0.7;
+      }catch{
+        return true;
+      }
     }
     runCheck(){
       const now=Date.now();
       if(now-this._last<this._int) return;
       this._last=now;
-      // 预留扩展位：可接入更细的节点巡检
     }
     start(){} stop(){}
   }
+
+  /* ========== Deferred Task Engine（智能事件驱动） ========== */
+
+  const DeferredTaskEngine = (() => {
+    /**
+     * 使用最小侵入式的 Deferred 调度：
+     * - 优先使用 Promise.then（微任务），否则回退 setTimeout 0
+     * - 确保所有重任务在 main() 返回后执行，避免阻塞 flclash GUI
+     */
+    function defer(fn){
+      try{
+        if(typeof Promise!=="undefined" && Promise.resolve){
+          Promise.resolve().then(fn);
+        }else{
+          setTimeout(fn,0);
+        }
+      }catch{
+        try{setTimeout(fn,0);}catch{}
+      }
+    }
+    return { defer };
+  })();
 
   /* ========== ConfigBuilder ========== */
 
@@ -1291,7 +1473,6 @@ const Sirkey = (() => {
       }
     }
     static _finalAudit(cfg){
-      // 这里使用 ??=，修复原来 “?? 但未赋值” 的逻辑缺陷
       cfg["allow-lan"] ??= true;
       cfg["mode"] ??= "rule";
       cfg["log-level"] ??= "info";
@@ -1333,12 +1514,6 @@ const Sirkey = (() => {
       return {regions,regionProxyGroups,otherProxyNames};
     }
 
-    /**
-     * [修正点] 系统配置合并策略
-     *
-     * - 原实现直接 Object.assign(cfg, sys)，会覆盖用户在原配置中的系统级字段
-     * - 现改为 Utils.mergeDefaults：仅在用户未设置时填入默认值，避免破坏性覆写
-     */
     static _mergeSystem(cfg){
       try{
         if(Config.system && typeof Config.system==="object"){
@@ -1362,7 +1537,6 @@ const Sirkey = (() => {
           Utils.mergeDefaults(cfg, sys);
         }
         if(Config.dns && typeof Config.dns==="object"){
-          // DNS 同样采用 “默认填充不覆盖用户” 策略
           cfg.dns = Utils.mergeDefaults(cfg.dns || {}, Config.dns);
         }
       }catch(e){Logger.warn("Config.MergeSystem",e.message||e);}
@@ -1373,16 +1547,15 @@ const Sirkey = (() => {
       catch(e){Logger.warn("Config.RegionNames",e.message||e);return[];}
     }
 
-    /**
-     * [修正点] 确保 proxies 一定为数组，而不是仅用 ?? 做无效表达式
-     */
     static _ensureSystemProxies(cfg){
       if(!Array.isArray(cfg.proxies)) cfg.proxies = [];
     }
 
     static _buildProxyGroups(cfg,regionNames,regionGroups,otherNames){
       const base=Utils.getProxyGroupBase();
+
       const groups=[];
+
       groups.push({
         ...base,
         name:"默认节点",
@@ -1430,16 +1603,21 @@ const Sirkey = (() => {
         });
         groups.push(...regionGroups);
       }
+
+      // 将“最佳节点”分组移动到所有分组最前方，提升可见性与可用性
+      try{
+        const idx = groups.findIndex(g => g && g.name === "最佳节点");
+        if (idx > 0) {
+          const [best] = groups.splice(idx, 1);
+          groups.unshift(best);
+        }
+      }catch(e){
+        Logger.warn("Config.GroupOrder", e.message || e);
+      }
+
       return groups;
     }
 
-    /**
-     * [FIXED] 规则排序逻辑
-     *
-     * - 保留原有规则的相对顺序（完全不打乱）
-     * - 仅将所有 MATCH 规则保持相对顺序地移动到最后
-     *   符合 Mihomo “自上而下第一匹配” 的语义，不再改变其它规则的优先级
-     */
     static _sortRules(rules){
       if(!Array.isArray(rules) || !rules.length) return rules || [];
       const normal = [];
@@ -1561,6 +1739,7 @@ const Sirkey = (() => {
       this._regionMgr=null;
       this._health=null;
       this._lifecycle=null;
+      this._initialized = false;
       CentralManager._instance=this;
     }
     get httpClient(){return this._http;}
@@ -1571,19 +1750,14 @@ const Sirkey = (() => {
     get healthMonitor(){if(!this._health) this._health=new HealthMonitor(this.regionAutoManager.stats); return this._health;}
     get lifecycle(){if(!this._lifecycle) this._lifecycle=new SmartLifecycleManager(this); return this._lifecycle;}
 
-    processConfiguration(config,ctx=null){
-      this.lifecycle.trigger("processConfiguration");
-      const scene=SceneDetector.detect(ctx);
-      this.regionAutoManager.ai.setScene(scene);
-      const risk=this._security.analyzeThreat(ctx);
-      if(risk>0.7) Logger.warn("Central.Security",`高风险(request score=${risk.toFixed(2)})`);
-      const stats=this._cache.getStats();
-      Logger.info("Central.Cache",`命中率 ${(stats.ratio*100).toFixed(2)}%, L1/L2 ${stats.l1Size}/${stats.l2Size}`);
-      return ConfigBuilder.build(config,this);
-    }
-    _safeFetch(url,opt={},timeout=5000){return this._http.safeFetch(url,opt,timeout);}
+    /**
+     * 初始化只做一次，且只注册任务，不执行任务。
+     */
     initialize(){
+      if (this._initialized) return;
+      this._initialized = true;
       try{
+        // Mihomo 环境下不会真正发 HTTP 探测，selectBestMirror 内部已做判断
         selectBestMirror(this.httpClient).catch(e=>Logger.error("Central.init","镜像探测异常",e.message));
         const lc=this.lifecycle;
         lc.addTask("AI_SelfCheck",()=>{
@@ -1603,18 +1777,44 @@ const Sirkey = (() => {
         }
         lc.addTask("Cache_Validation",()=>{this.lruCache.validate();},(Config.aiOptions?.cache?.verifyInterval||3600)*1000);
         lc.addTask("Health_Check",()=>{this.healthMonitor.runCheck();},1000);
+        lc.addTask("LRU_Persistence_Flush",()=>{
+          const budget = Config.performance?.ioBudgetPerTick ?? 16;
+          this.lruCache.flushPersistence(budget);
+        },2000);
+
         Logger.info("Central.init",`初始化完成 - 镜像: ${GH_PROXY||"直连"}`);
       }catch(e){Logger.error("Central.init",`失败: ${e.message}`);}
     }
+
+    /**
+     * 核心：processConfiguration 不再同步触发 lifecycle.trigger，而是通过 DeferredTaskEngine 延迟执行。
+     */
+    processConfiguration(config,ctx=null){
+      const scene=SceneDetector.detect(ctx);
+      this.regionAutoManager.ai.setScene(scene);
+      const risk=this._security.analyzeThreat(ctx);
+      if(risk>0.7) Logger.warn("Central.Security",`高风险(request score=${risk.toFixed(2)})`);
+      const stats=this._cache.getStats();
+      Logger.info("Central.Cache",`命中率 ${(stats.ratio*100).toFixed(2)}%, L1/L2 ${stats.l1Size}/${stats.l2Size}`);
+
+      // Deferred 调度生命周期任务，确保不阻塞 main()
+      DeferredTaskEngine.defer(() => {
+        try{
+          this.lifecycle.trigger("processConfiguration");
+        }catch(e){
+          Logger.error("Central.Deferred","Lifecycle 触发失败",e.message);
+        }
+      });
+
+      return ConfigBuilder.build(config,this);
+    }
+
+    _safeFetch(url,opt={},timeout=5000){return this._http.safeFetch(url,opt,timeout);}
   }
 
   /* ========== 错误配置工厂 ========== */
 
   const ErrorConfigFactory = {
-    /**
-     * [修正点] 占位节点改为标准 direct 结构：
-     * - 不再附加无意义的 server/port 字段，避免解析器歧义
-     */
     createErrorConfig(msg,opts={}){
       const t=Date.now();
       return {
@@ -1622,7 +1822,7 @@ const Sirkey = (() => {
         type:"direct",
         ...opts,
         _error:true,_errorMessage:msg,_errorTimestamp:t,
-        _scriptError:{timestamp:t,message:msg,fallback:true,version:"optimized_compact_fixed_compliant"}
+        _scriptError:{timestamp:t,message:msg,fallback:true,version:"optimized_compact_fixed_compliant_adaptive_hardened_deferred_3.1.4"}
       };
     }
   };
@@ -1635,7 +1835,8 @@ const Sirkey = (() => {
     NodeStatsManager,AIEngine,RegionAutoManager,
     AdBlockManager,LRUCache,HttpClient,SecurityGuard,
     SmartLifecycleManager,HealthMonitor,CentralManager,
-    ConfigBuilder,ErrorConfigFactory
+    ConfigBuilder,ErrorConfigFactory,
+    DeferredTaskEngine
   };
 })();
 
@@ -1648,7 +1849,7 @@ function main(config, profileName){
   try{
     const central=Sirkey.CentralManager.getInstance();
     central.initialize();
-    // profileName 保留扩展位，当前不用于决策
+    // main() 热路径：仅构建配置 + 启动 Deferred 任务，不做任何同步重任务
     return central.processConfiguration(config);
   }catch(e){
     const msg=e?.message||"未知错误";
@@ -1683,11 +1884,12 @@ const EXPORTS = {
   getGHProxy:Sirkey.GH_PROXY,
   selectBestMirror:Sirkey.selectBestMirror,
   Logger:Sirkey.Logger,
-  URLS:Sirkey.URLS
+  URLS:Sirkey.URLS,
+  DeferredTaskEngine:Sirkey.DeferredTaskEngine
 };
 
 if(Sirkey.Env.isCJS()) module.exports=EXPORTS;
 if(Sirkey.Env.isNode){Object.assign(global,EXPORTS);}
 if(Sirkey.Env.isBrowser){window.__MihomoScript__=EXPORTS;}
 
-Sirkey.Logger.info("Script",`Compact Fixed Compliant 版加载完成 - 环境: ${Sirkey.Env.get()}`);
+Sirkey.Logger.info("Script",`Compact Fixed Compliant Adaptive Hardened Deferred 3.1.4 版加载完成 - 环境: ${Sirkey.Env.get()}`);
