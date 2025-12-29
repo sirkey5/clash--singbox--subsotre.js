@@ -13,191 +13,216 @@
 
 
 
-## 🚀 主要功能
+  
+高性能 · 高智能 · 高可靠 · 全自动化的 Mihomo 覆写脚本
 
-### 1. AI 驱动的智能节点评估
-- **EWMA 评分算法**：采用指数加权移动平均算法对节点进行动态评分
-- **多维度评估**：基于延迟、带宽、稳定性、抖动、可用性等指标进行综合评分
-- **场景感知**：根据使用场景（游戏、流媒体、下载、浏览）自动调整评分权重
-- **趋势分析**：预测节点性能趋势，提前切换劣化节点
+---
 
-### 2. 智能区域分组
-- **自动区域识别**：基于节点名称和 GeoIP 信息自动识别节点所在区域
-- **预设区域配置**：支持 HK、TW、JP、SG、US、KR、CN、GB、DE、FR 等多个地区
-- **动态分组**：支持根据节点质量自动选择最佳节点
+## 📌 简介
 
-### 3. 全面的规则系统
-- **AI 服务支持**：OpenAI、Claude、Gemini 等 AI 服务专用规则
-- **流媒体支持**：YouTube、Netflix、Disney+、Prime Video、HBO、TikTok 等
-- **社交媒体**：Telegram、Discord、WhatsApp、Line 等
-- **游戏平台**：Steam、Epic Games、游戏专用规则
-- **广告过滤**：内置广告和跟踪器过滤规则
+**clash-verge&flclash&mihomo.js** 是一款专为 **Mihomo / Clash.Meta** 设计的智能覆写脚本，旨在在不改变用户原始配置结构的前提下，实现：
 
-### 4. 高级 DNS 管理
-- **多级 DNS 策略**：支持国内外域名不同解析策略
-- **Fake IP 模式**：提升解析速度和隐私保护
-- **DNS 加密**：支持 DoH (DNS over HTTPS)
+- 更智能的节点选择  
+- 更精确的区域识别  
+- 更稳定的网络行为  
+- 更强的自适应能力  
+- 更安全的配置合并  
+- 更高效的缓存与性能优化  
 
-### 5. 安全与隐私保护
-- **敏感信息脱敏**：自动对 IP、URL 参数等敏感信息进行脱敏处理
-- **威胁检测**：检测恶意域名和高风险节点
-- **隐私加固**：限制对敏感信息的外部查询
+本脚本采用 **三层架构（Core / Runtime / AI）**，并通过 **LRU 缓存、AI 评分、区域聚合、生命周期管理、威胁检测** 等机制，构建一个高度自动化、可持续运行的智能配置系统。
 
-### 6. 性能优化
-- **多级缓存机制**：L1/L2 内存缓存与持久化存储
-- **异步处理**：非阻塞式处理流程，提高响应速度
-- **资源优化**：智能内存管理和垃圾回收
+---
 
-## 📋 功能特色
+## ✨ 核心特性
 
-### AI 智能评分系统
-- **动态权重调整**：根据使用场景自动调整评分权重
-  - 游戏模式：延迟权重 60%，抖动权重 30%
-  - 流媒体模式：带宽权重 60%，稳定性权重 30%
-  - 下载模式：带宽权重 80%
-  - 浏览模式：延迟权重 40%，稳定性权重 30%
-- **智能切换保护**：避免频繁切换，保持连接稳定性
-- **故障节点隔离**：自动隔离连续失败的节点
+### 🔥 1. 智能节点选择（AI Engine）
+- EWMA 平滑算法  
+- 多维度评分（延迟、丢包、抖动、带宽、可用性）  
+- 场景感知（游戏 / 流媒体 / 浏览 / 下载）  
+- 网络状态自适应（稳定 / 波动 / 拥堵）  
+- 节点隔离、恢复、降级、平滑切换  
 
-### 区域智能分组
-- **自动发现**：自动识别配置中的节点区域
-- **智能匹配**：支持正则表达式和地理信息匹配
-- **健康检查**：对区域组进行健康检查和自动选择
+### 🌏 2. 自动区域识别（Region Auto Manager）
+- GeoIP 批量查询（带隐私保护）  
+- 正则匹配 + 国家代码推断  
+- 自动构建区域分组  
+- 自动生成“全球优选”、“自动选择”、“其他节点”等分组  
 
-### 规则自动管理
-- **自动发现规则**：根据配置自动启用相关规则
-- **智能规则注入**：自动注入常用服务规则
-- **规则优化**：支持多种规则格式（MRS、YAML、TXT）
+### ⚙️ 3. 高性能缓存系统（双层 LRU + TTL + 持久化）
+- L1/L2 双层缓存  
+- TTL 自动过期  
+- Node 环境持久化加速冷启动  
+- 自动内存回收与自修复  
 
-### 配置自适应
-- **自动补全**：自动检测并补全缺失的配置项
-- **错误恢复**：配置异常时自动修复和降级
-- **兼容性保证**：确保生成的配置符合 Mihomo 规范
+### 🛡️ 4. 安全与隐私保护
+- URL/敏感字段脱敏  
+- 威胁评分（端口/域名/IP/进程）  
+- 高风险请求自动阻断外查  
+- 配置合并函数白名单（防止 RCE）  
 
-## 🔧 配置说明
+### 🔧 5. 全自动规则管理
+- 自动发现规则源  
+- 支持 ACL4SSR / anti-AD / clash-rules / Loyalsoldier  
+- 自动注入 rule-providers  
+- 自动排序规则，保证最优匹配顺序  
 
-### AI 评估配置
-```javascript
-aiOptions: {
-  enable: true,  // 启用 AI 评估
-  scoring: {     // 基础评分权重
-    latencyWeight: 0.35,
-    bandwidthWeight: 0.15,
-    stabilityWeight: 0.25,
-    jitterWeight: 0.15,
-    uptimeWeight: 0.1
-  },
-  scenes: {      // 场景特定权重
-    gaming: { latencyWeight: 0.6, jitterWeight: 0.3, ... },
-    streaming: { bandwidthWeight: 0.6, ... },
-    // ...
-  },
-  protection: {  // 保护机制
-    cooldown: 300,          // 切换冷却时间
-    maxSwitches24h: 20,     // 24小时最大切换次数
-    failIsolationH: 12      // 失败节点隔离时间
-  }
-}
+### ♻️ 6. 生命周期管理（Lifecycle Manager）
+- AI 自检  
+- 镜像健康检查  
+- 缓存验证  
+- 内存监控与自恢复  
+- 组件健康检查  
+
+---
+
+## 📦 安装与使用
+
+### 1. 将脚本放入你的仓库
+例如：
+
+```
+/scripts/sirkey-override.js
 ```
 
-### 区域配置
-```javascript
-regionOptions: {
-  geoIpGrouping: true,  // 启用 GeoIP 分组
-  autoDiscover: true,   // 自动发现新区域
-  regions: [            // 预设区域配置
-    { name: "HK香港", regex: /港|🇭🇰|hk|hongkong|hkg/i, code: "HK" },
-    { name: "JP日本", regex: /日|🇯🇵|jp|japan|nrt|hnd|kix/i, code: "JP" },
-    // ...
-  ]
-}
-```
+### 2. 在 Mihomo 配置中引用覆写脚本
 
-### DNS 配置
-```javascript
-dns: {
-  enable: true,
-  listen: "127.0.0.1:1053",
-  ipv6: true,
-  "enhanced-mode": "fake-ip",
-  nameserver: ["https://223.5.5.5/dns-query", "https://119.29.29.29/dns-query"],
-  fallback: ["https://1.1.1.1/dns-query", "https://9.9.9.9/dns-query"]
-}
-```
+在你的 `config.yaml` 中加入：
 
-## 🚀 使用方法
-
-### 基本用法
-1. 将脚本保存为 `mihomoYBTraeAI.js`
-2. 在 Mihomo 配置中引用该脚本
-3. 提供基础配置作为输入
-
-### 示例配置
 ```yaml
-# 在 Mihomo 配置中
 script:
-  code: |
-    # 读取并执行脚本
-    # 传入原始配置进行处理
+  path: ./scripts/sirkey-override.js
+  arguments:
+    profile: default
 ```
 
-## 🌐 服务支持
+### 3. 使用方式
 
-### AI 服务
-- [x] OpenAI (ChatGPT)
-- [x] Claude (Anthropic)
-- [x] Google Gemini
-- [x] Perplexity
-- [x] Mistral
+Mihomo 会自动调用脚本的：
 
-### 流媒体服务
-- [x] YouTube
-- [x] Netflix
-- [x] Disney+
-- [x] Prime Video
-- [x] HBO Max
-- [x] Hulu
-- [x] TikTok
-- [x] 哔哩哔哩国际版
-- [x] Spotify
+```js
+main(config, profileName)
+```
 
-### 社交媒体
-- [x] Telegram
-- [x] Discord
-- [x] WhatsApp
-- [x] Line
-- [x] Slack
+脚本会对你的配置进行：
 
-### 游戏平台
-- [x] Steam
-- [x] Epic Games
-- [x] 游戏专用规则
+- 自动区域识别  
+- 自动规则注入  
+- 自动代理组构建  
+- 自动 AI 节点选择  
+- 自动安全检查  
+- 自动缓存优化  
 
-## 🛡️ 安全特性
+无需任何额外操作。
 
-- **威胁检测**：自动检测和阻止恶意域名
-- **隐私保护**：脱敏敏感信息，防止泄露
-- **访问控制**：限制对危险端口的访问
-- **安全审计**：记录和分析安全事件
+---
 
-## 📊 性能指标
+## 📁 项目结构（建议）
 
-- **响应时间**：平均 < 50ms
-- **内存占用**：优化的缓存机制，低内存使用
-- **CPU 使用率**：异步处理，低 CPU 占用
-- **配置生成时间**：毫秒级配置生成
+```
+.
+├── scripts/
+│   └── sirkey-override.js
+├── README.md
+└── config.yaml
+```
 
-## 🤝 贡献
+---
 
-欢迎提交 Issue 和 Pull Request 来改进此项目。
+## 🧠 架构设计
 
-## 📄 许可证
+### 三层架构：
 
-此项目基于 MIT 许可证开源。
+```
+Core 层：Env / Utils / Logger / Storage / HttpClient / LRUCache
+Runtime 层：RegionAutoManager / NodeStatsManager / AIEngine / SecurityGuard
+AI 层：智能评分 / 场景识别 / 网络状态分析 / 节点选择
+```
 
-## 🙏 致谢
+### 中央管理器（CentralManager）
 
-- 感谢 Mihomo 项目
-- 感谢相关规则提供者
-- 感谢社区的持续支持
+统一管理：
 
+- HTTP 客户端  
+- 缓存  
+- 安全系统  
+- 区域系统  
+- AI 系统  
+- 生命周期系统  
+
+---
+
+## 🧪 测试建议（可选）
+
+为了确保脚本在你的环境中达到最佳效果，建议进行：
+
+- 大规模节点测试（>1000 节点）  
+- 高并发测试（1000 并发调用 main）  
+- 内存压力测试  
+- 异常输入测试  
+- 规则覆盖测试  
+
+---
+
+## 🛠️ 配置项说明（节选）
+
+### Config.aiOptions
+
+| 字段 | 说明 |
+|------|------|
+| scoring | AI 评分权重 |
+| scenes | 场景权重覆盖 |
+| protection | 节点保护策略 |
+| cache | 缓存策略 |
+| trendAnalysis | 趋势分析开关 |
+
+### Config.regionOptions
+
+| 字段 | 说明 |
+|------|------|
+| geoIpGrouping | 是否启用 GeoIP 聚合 |
+| autoDiscover | 是否自动发现区域 |
+| excludeHighPercentage | 是否排除占比过高区域 |
+| ratioLimit | 区域占比阈值 |
+
+---
+
+## 🧩 常见问题（FAQ）
+
+### Q1：脚本会修改我的原始配置吗？  
+不会。所有修改都在覆写层完成，不会写回你的原始文件。
+
+### Q2：脚本是否会泄露隐私？  
+不会。  
+- 私网 IP 不会外查  
+- 高风险请求会被阻断  
+- 所有敏感字段会被脱敏  
+
+### Q3：脚本是否会导致节点频繁切换？  
+不会。  
+AI 引擎内置平滑机制（score 差值阈值 + 冷却时间）。
+
+---
+
+## 🧑‍💻 贡献
+
+欢迎提交：
+
+- Bug 报告  
+- 性能优化  
+- 新规则源  
+- 新区域识别逻辑  
+- 新 AI 评分策略  
+
+---
+
+## 📜 许可证
+
+MIT License
+
+---
+
+## ⭐ Star 支持
+
+如果这个项目对你有帮助，欢迎点一个 ⭐ 支持！
+
+---
