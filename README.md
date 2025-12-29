@@ -18,7 +18,7 @@
 
 ## 📌 简介
 
-**clash-verge&flclash&mihomo.js** # 这是一个为 **Mihomo (Clash Meta)** 深度定制的高性能、智能化配置覆写脚本。该脚本旨在通过自动化、自适应和自愈机制，为用户提供一个极速、稳定且智能的代理环境。
+**clash-verge&flclash&mihomo.js** # 这是一个为 **Mihomo (Clash Meta)** 深度定制的高性能、智能化配置覆写脚本。该脚本旨在通过自动化、自适应和自愈机制，为用户提供一个全自动，零干预的极速、稳定且智能的代理环境。
 
 ## 🚀 核心特性
 
@@ -98,3 +98,4 @@ parsers:
 *   [Koolson/Qure](https://github.com/Koolson/Qure) (图标库)
 
 ---
+
