@@ -18,212 +18,83 @@
 
 ## 📌 简介
 
-**clash-verge&flclash&mihomo.js** 是一款专为 **Mihomo / Clash.Meta** 设计的智能覆写脚本，旨在在不改变用户原始配置结构的前提下，实现：
+**clash-verge&flclash&mihomo.js** # 这是一个为 **Mihomo (Clash Meta)** 深度定制的高性能、智能化配置覆写脚本。该脚本旨在通过自动化、自适应和自愈机制，为用户提供一个极速、稳定且智能的代理环境。
 
-高性能 · 高智能 · 高可靠 · 全自动化的 Mihomo 覆写脚本
+## 🚀 核心特性
 
-- 更智能的节点选择  
-- 更精确的区域识别  
-- 更稳定的网络行为  
-- 更强的自适应能力  
-- 更安全的配置合并  
-- 更高效的缓存与性能优化  
+### 1. 🧠 智能 AI 决策引擎
+*   **加权评分系统**：根据延迟、带宽、稳定性、抖动和在线时长等多维度指标自动评估节点。
+*   **场景感知优化**：针对不同使用场景动态调整评分权重：
+    *   **电竞模式 (Gaming)**：极低延迟与抖动优先。
+    *   **流媒体模式 (Streaming)**：高带宽与连接稳定性优先。
+    *   **网页浏览 (Browsing)**：平衡性能优化。
+    *   **大文件下载 (Download)**：最大化带宽利用率。
+*   **趋势预测**：分析节点性能走势，在节点质量下降前主动预判并切换。
 
-本脚本采用 **三层架构（Core / Runtime / AI）**，并通过 **LRU 缓存、AI 评分、区域聚合、生命周期管理、威胁检测** 等机制，构建一个高度自动化、可持续运行的智能配置系统。
+### 2. ⚡ 自适应自愈闭环
+*   **健康度评估**：实时监测脚本运行状态与节点连接健康度。
+*   **渐进式恢复**：节点失效后进入隔离期，并在检测到性能回升后逐步恢复使用。
+*   **风险回退**：若新配置导致异常，系统将自动触发回退机制，确保网络不中断。
 
----
+### 3. 🌐 智能 GitHub 镜像系统
+*   **自动优选镜像**：自动测速并选择最优的 GitHub 加速镜像（如 ghproxy, jsdelivr 等），确保资源更新可靠。
+*   **无缝回退**：当镜像失效时，自动尝试备用镜像或直连，保障规则集始终可用。
 
-## ✨ 核心特性
+### 4. 🛡️ 全方位规则管理
+*   **自动发现机制**：智能识别并整合代理组与规则提供者（Rule Providers）。
+*   **内置精选规则集**：深度集成 AI (OpenAI, Claude, Gemini)、流媒体 (Netflix, YouTube, Disney+)、社交软件 (Telegram, Discord)、游戏平台 (Steam, Epic) 等百余种规则。
+*   **隐私与安全**：内置敏感信息脱敏系统，支持加密 DNS (DoH/DoT) 及复杂的 DNS 路由策略。
 
-### 🔥 1. 智能节点选择（AI Engine）
-- EWMA 平滑算法  
-- 多维度评分（延迟、丢包、抖动、带宽、可用性）  
-- 场景感知（游戏 / 流媒体 / 浏览 / 下载）  
-- 网络状态自适应（稳定 / 波动 / 拥堵）  
-- 节点隔离、恢复、降级、平滑切换  
-
-### 🌏 2. 自动区域识别（Region Auto Manager）
-- GeoIP 批量查询（带隐私保护）  
-- 正则匹配 + 国家代码推断  
-- 自动构建区域分组  
-- 自动生成“全球优选”、“自动选择”、“其他节点”等分组  
-
-### ⚙️ 3. 高性能缓存系统（双层 LRU + TTL + 持久化）
-- L1/L2 双层缓存  
-- TTL 自动过期  
-- Node 环境持久化加速冷启动  
-- 自动内存回收与自修复  
-
-### 🛡️ 4. 安全与隐私保护
-- URL/敏感字段脱敏  
-- 威胁评分（端口/域名/IP/进程）  
-- 高风险请求自动阻断外查  
-- 配置合并函数白名单（防止 RCE）  
-
-### 🔧 5. 全自动规则管理
-- 自动发现规则源  
-- 支持 ACL4SSR / anti-AD / clash-rules / Loyalsoldier  
-- 自动注入 rule-providers  
-- 自动排序规则，保证最优匹配顺序  
-
-### ♻️ 6. 生命周期管理（Lifecycle Manager）
-- AI 自检  
-- 镜像健康检查  
-- 缓存验证  
-- 内存监控与自恢复  
-- 组件健康检查  
-
----
+### 5. 🛠️ 技术优势
+*   **跨平台兼容**：支持 Mihomo (Clash Meta) 内核环境，同时兼容 Node.js 脚本执行及浏览器调试。
+*   **极致性能**：深度优化的代码逻辑，即使在处理上万条规则时也能保持极低的 CPU 和内存占用。
+*   **高健壮性**：完善的错误处理框架，即使脚本发生崩溃也能通过 `ErrorConfigFactory` 返回基础可用配置。
 
 ## 📦 安装与使用
 
-### 1. 将脚本放入你的仓库
-例如：
-
-```
-/scripts/sirkey-override.js
-```
-
-### 2. 在 Mihomo 配置中引用覆写脚本
-
-在你的 `config.yaml` 中加入：
+### 1. 在 Mihomo (Clash Meta) 中使用
+将脚本内容添加至配置文件的 `parsers` 处理器中，或作为外部 `script` 引入。
 
 ```yaml
-script:
-  path: ./scripts/sirkey-override.js
-  arguments:
-    profile: default
+# 示例：作为 parser 引入
+parsers:
+  - url: 您的订阅链接
+    code: |
+      // 引入脚本并执行 main 函数
+      const SirkeyScript = '...脚本内容...';
+      function parse(config, { name }) {
+        return main(config, name);
+      }
 ```
 
-### 3. 使用方式
+### 2. 本地开发与测试
+脚本支持在 Node.js 环境下直接运行，方便开发者进行配置调试。
 
-Mihomo 会自动调用脚本的：
 
-```js
-main(config, profileName)
-```
+## ⚙️ 配置项说明
 
-脚本会对你的配置进行：
+脚本提供丰富的 `Config` 对象供用户自定义：
 
-- 自动区域识别  
-- 自动规则注入  
-- 自动代理组构建  
-- 自动 AI 节点选择  
-- 自动安全检查  
-- 自动缓存优化  
+*   **`aiOptions`**：调整评分权重、评估阈值及缓存策略。
+*   **`ruleOptions`**：自定义规则集的启用状态及默认行为。
+*   **`regionOptions`**：根据正则匹配自定义节点地域分组及图标。
+*   **`dns`**：配置 Fake-IP 过滤、分流解析及上游 DNS 服务器。
+*   **`privacy`**：管理 GitHub 镜像开关及外部资源获取偏好。
 
-无需任何额外操作。
+## 📂 项目架构
 
----
+*   `CentralManager`：核心调度器，管理配置生成的全生命周期。
+*   `AIEngine`：负责智能节点评分与优选逻辑。
+*   `SelfHealingEngine`：执行健康监测与自愈任务。
+*   `ConfigBuilder`：负责组装最终的 Mihomo 兼容配置。
+*   `GitHub Mirror System`：动态维护资源下载链路。
 
-## 📁 项目结构（建议）
+## 🤝 致谢
 
-```
-.
-├── scripts/
-│   └── sirkey-override.js
-├── README.md
-└── config.yaml
-```
-
----
-
-## 🧠 架构设计
-
-### 三层架构：
-
-```
-Core 层：Env / Utils / Logger / Storage / HttpClient / LRUCache
-Runtime 层：RegionAutoManager / NodeStatsManager / AIEngine / SecurityGuard
-AI 层：智能评分 / 场景识别 / 网络状态分析 / 节点选择
-```
-
-### 中央管理器（CentralManager）
-
-统一管理：
-
-- HTTP 客户端  
-- 缓存  
-- 安全系统  
-- 区域系统  
-- AI 系统  
-- 生命周期系统  
+感谢以下项目提供的规则集与灵感：
+*   [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat)
+*   [Loyalsoldier/clash-rules](https://github.com/Loyalsoldier/clash-rules)
+*   [ACL4SSR/ACL4SSR](https://github.com/ACL4SSR/ACL4SSR)
+*   [Koolson/Qure](https://github.com/Koolson/Qure) (图标库)
 
 ---
-
-## 🧪 测试建议（可选）
-
-为了确保脚本在你的环境中达到最佳效果，建议进行：
-
-- 大规模节点测试（>1000 节点）  
-- 高并发测试（1000 并发调用 main）  
-- 内存压力测试  
-- 异常输入测试  
-- 规则覆盖测试  
-
----
-
-## 🛠️ 配置项说明（节选）
-
-### Config.aiOptions
-
-| 字段 | 说明 |
-|------|------|
-| scoring | AI 评分权重 |
-| scenes | 场景权重覆盖 |
-| protection | 节点保护策略 |
-| cache | 缓存策略 |
-| trendAnalysis | 趋势分析开关 |
-
-### Config.regionOptions
-
-| 字段 | 说明 |
-|------|------|
-| geoIpGrouping | 是否启用 GeoIP 聚合 |
-| autoDiscover | 是否自动发现区域 |
-| excludeHighPercentage | 是否排除占比过高区域 |
-| ratioLimit | 区域占比阈值 |
-
----
-
-## 🧩 常见问题（FAQ）
-
-### Q1：脚本会修改我的原始配置吗？  
-不会。所有修改都在覆写层完成，不会写回你的原始文件。
-
-### Q2：脚本是否会泄露隐私？  
-不会。  
-- 私网 IP 不会外查  
-- 高风险请求会被阻断  
-- 所有敏感字段会被脱敏  
-
-### Q3：脚本是否会导致节点频繁切换？  
-不会。  
-AI 引擎内置平滑机制（score 差值阈值 + 冷却时间）。
-
----
-
-## 🧑‍💻 贡献
-
-欢迎提交：
-
-- Bug 报告  
-- 性能优化  
-- 新规则源  
-- 新区域识别逻辑  
-- 新 AI 评分策略  
-
----
-
-## 📜 许可证
-
-MIT License
-
----
-
-## ⭐ Star 支持
-
-如果这个项目对你有帮助，欢迎点一个 ⭐ 支持！
-
----
-
