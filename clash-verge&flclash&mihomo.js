@@ -41,7 +41,9 @@ const Sirkey = (() => {
     AI_REG: /openai|claude|gemini|ai|chatgpt|api\.openai|anthropic|googleapis|perplex|mistral|cohere/i,
     SAFE_PORTS: new Set([80,443,8080,8081,8088,8880,8443,2052,2053,2082,2083,2086,2087,2095,2096]),
     IPV4_REG: /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)$/,
-    DEBUG: false
+    DEBUG: false,
+    // Mihomo内置特殊代理名称（不可在proxies数组中定义）
+    BUILTIN_PROXIES: new Set(["DIRECT", "REJECT"])
   });
 
   /* ========== Deferred Task Engine（轻量级延迟调度） ========== */
@@ -141,6 +143,95 @@ const Sirkey = (() => {
     safeSet(obj,k,v){ if(obj && k) obj[k]=v; },
     escapeRegex(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");},
     regexToMihomo(re){return re instanceof RegExp ? (re.ignoreCase?"(?i)":"")+re.source : String(re);},
+    /**
+     * 检查是否为Mihomo内置特殊代理名称
+     * @param {string} name 代理名称
+     * @returns {boolean} 是否为内置代理
+     */
+    isBuiltinProxy(name){
+      if(typeof name !== "string") return false;
+      return CONSTANTS.BUILTIN_PROXIES.has(name.toUpperCase());
+    },
+    /**
+     * 过滤掉内置特殊代理名称（用于proxies数组）
+     * @param {Array} proxies 代理数组
+     * @returns {Array} 过滤后的代理数组
+     */
+    filterBuiltinProxies(proxies){
+      if(!Array.isArray(proxies)) return [];
+      return proxies.filter(p=>{
+        const name = typeof p?.name === "string" ? p.name.trim() : "";
+        if(Utils.isBuiltinProxy(name)){
+          Logger.debug("Utils.FilterBuiltin",`移除内置代理: ${name}`);
+          return false;
+        }
+        return true;
+      });
+    },
+    /**
+     * 验证并去重proxy名称
+     * @param {Array} proxies 代理数组
+     * @returns {Object} {valid: Array, invalid: Array, duplicates: Map}
+     */
+    validateProxyNames(proxies){
+      if(!Array.isArray(proxies)) return {valid:[], invalid:[], duplicates:new Map()};
+      const seen=new Map();
+      const valid=[];
+      const invalid=[];
+      const duplicates=new Map();
+
+      proxies.forEach((p, idx)=>{
+        if(!p || typeof p !== "object"){
+          invalid.push({idx, reason:"非对象类型"});
+          return;
+        }
+        const name = typeof p.name === "string" ? p.name.trim() : "";
+        if(!name){
+          invalid.push({idx, reason:"缺少name字段或name为空"});
+          return;
+        }
+        // 检查内置代理
+        if(Utils.isBuiltinProxy(name)){
+          invalid.push({idx, name, reason:"内置特殊代理名称不可定义"});
+          return;
+        }
+        // 检查重复
+        if(seen.has(name)){
+          const existing = seen.get(name);
+          duplicates.set(name, [...(duplicates.get(name)||[existing]), idx]);
+          invalid.push({idx, name, reason:"名称重复"});
+          return;
+        }
+        seen.set(name, idx);
+        valid.push(p);
+      });
+
+      return {valid, invalid, duplicates};
+    },
+    /**
+     * 安全地添加代理名称到列表，自动去重和过滤内置代理
+     * @param {Array} list 现有列表
+     * @param {Array} names 要添加的名称列表
+     * @returns {Array} 处理后的列表
+     */
+    safeAddNames(list, names){
+      if(!Array.isArray(list)) list = [];
+      if(!Array.isArray(names)) names = [];
+      const existing = new Set(list);
+      const result = [...list];
+      for(const name of names){
+        const n = typeof name === "string" ? name.trim() : "";
+        if(!n) continue;
+        if(Utils.isBuiltinProxy(n)){
+          continue; // 内置代理不需要添加，Mihomo会自动处理
+        }
+        if(!existing.has(n)){
+          existing.add(n);
+          result.push(n);
+        }
+      }
+      return result;
+    },
     getProxyGroupBase(){
       return {
         interval: Config.common?.proxyGroup?.interval ?? 300,
@@ -1076,11 +1167,14 @@ const Sirkey = (() => {
     buildRegionGroups(config,regions,proxies){
       const hasProviders = !!(config["proxy-providers"]&&Object.keys(config["proxy-providers"]).length);
       const list = Array.isArray(proxies)?proxies:[];
+
+      // 预过滤：移除内置特殊代理
+      const filteredList = Utils.filterBuiltinProxies(list);
       const usedFilters=[]; const regionGroups=[];
-      const allIds=list.map(p=>p.name).filter(Boolean);
+      const allIds=filteredList.map(p=>p.name).filter(Boolean);
       const heavyThreshold = Config.performance?.heavyProxyThreshold ?? 800;
-      const isHeavyPool = list.length > heavyThreshold;
-      if(isHeavyPool) Logger.warn("RegionAuto",`检测到大节点池 (${list.length}), 启用优化策略`);
+      const isHeavyPool = filteredList.length > heavyThreshold;
+      if(isHeavyPool) Logger.warn("RegionAuto",`检测到大节点池 (${filteredList.length}), 启用优化策略`);
 
       if(Config.aiOptions?.enable && allIds.length) this._ai.detectNetworkState(allIds);
 
@@ -1088,7 +1182,12 @@ const Sirkey = (() => {
       const globalStats = allIds.map(id=>{const s=this._stats.getStats(id);return {id,latency:this._ai.ewma(s.latencyHistory,0.3)??1500,loss:this._ai.ewma(s.lossHistory,0.3)??0.5,jitter:this._ai.ewma(s.jitterHistory,0.3)??500};});
 
       for(const r of activeRegions){
-        const regionProxies=list.filter(p=>{const n=String(p.name||""); if(["DIRECT","REJECT"].includes(n.toUpperCase())) return false; return p._geoMatch===r.name || r.regex.test(n);});
+        // 使用Utils.isBuiltinProxy检查，增强可维护性
+        const regionProxies=filteredList.filter(p=>{
+          const n=String(p?.name||"").trim();
+          if(Utils.isBuiltinProxy(n)) return false;
+          return p._geoMatch===r.name || r.regex.test(n);
+        });
         if(!hasProviders && !regionProxies.length) continue;
 
         let selected=regionProxies;
@@ -1302,6 +1401,20 @@ const Sirkey = (() => {
       const {rules,ruleProviders} = this._buildRules(cfg,regionGroupNames,context);
       cfg.rules=rules; cfg["rule-providers"]=ruleProviders;
       if(Config.autoIntervention) this._finalAudit(cfg);
+
+      // 最终验证 - 确保符合Mihomo官方规范
+      const validation = this._finalValidate(cfg);
+      if(!validation.valid && Config.autoIntervention){
+        // 如果有严重错误，尝试自动修复
+        Logger.warn("ConfigBuilder","检测到配置错误，尝试自动修复");
+        // 再次清理和验证
+        if(Array.isArray(cfg.proxies)){
+          cfg.proxies = Utils.filterBuiltinProxies(cfg.proxies);
+          const {valid} = Utils.validateProxyNames(cfg.proxies);
+          cfg.proxies = valid;
+        }
+      }
+
       return cfg;
     }
 
@@ -1318,9 +1431,21 @@ const Sirkey = (() => {
       cfg.proxies = Array.isArray(cfg.proxies) ? cfg.proxies : [];
       cfg["proxy-groups"] = Array.isArray(cfg["proxy-groups"]) ? cfg["proxy-groups"] : [];
       cfg.rules = Array.isArray(cfg.rules) ? cfg.rules : [];
+
+      // 预处理：移除proxies中的内置特殊代理
+      cfg.proxies = Utils.filterBuiltinProxies(cfg.proxies);
+
+      // 检查是否需要注入紧急代理
+      // 注意：不注入"DIRECT"或"REJECT"，因为它们是Mihomo内置的
       if(cfg.proxies.length===0 && !cfg["proxy-providers"]){
-        Logger.warn("Config.SelfHeal","注入紧急 DIRECT");
-        cfg.proxies.push({name:"DIRECT",type:"direct"});
+        Logger.warn("Config.SelfHeal","无可用代理，请检查订阅或proxy-providers配置");
+        // 创建一个错误标记的代理用于提示
+        cfg.proxies.push({
+          name:"⚠️ 无可用代理",
+          type:"direct",
+          _error:true,
+          _message:"请检查订阅链接或proxy-providers配置"
+        });
       }
     }
     static _finalAudit(cfg){
@@ -1331,6 +1456,85 @@ const Sirkey = (() => {
         }
       }
       if(Array.isArray(cfg.rules)) cfg.rules=cfg.rules.filter(r=>typeof r==="string" && r.split(",").length>=2);
+    }
+
+    /**
+     * 最终配置验证 - 检查Mihomo规范合规性
+     * @param {Object} cfg 配置对象
+     * @returns {Object} {valid: boolean, errors: Array[], warnings: Array[]}
+     */
+    static _finalValidate(cfg){
+      const errors = [];
+      const warnings = [];
+
+      // 验证proxies中的名称唯一性和合规性
+      if(Array.isArray(cfg.proxies)){
+        const {invalid, duplicates} = Utils.validateProxyNames(cfg.proxies);
+        if(invalid.length > 0){
+          invalid.forEach(inv => {
+            errors.push(`代理配置错误: ${inv.name || '未知'} - ${inv.reason}`);
+          });
+        }
+        if(duplicates.size > 0){
+          duplicates.forEach((idxs, name) => {
+            errors.push(`重复的代理名称: ${name} (出现在 ${idxs.length} 处)`);
+          });
+        }
+      }
+
+      // 验证proxy-groups中的名称唯一性
+      if(Array.isArray(cfg["proxy-groups"])){
+        const groupNames = new Map();
+        cfg["proxy-groups"].forEach((g, idx) => {
+          if(!g || !g.name){
+            warnings.push(`ProxyGroup[${idx}] 缺少name字段`);
+            return;
+          }
+          if(groupNames.has(g.name)){
+            errors.push(`重复的ProxyGroup名称: ${g.name} (索引 ${groupNames.get(g.name)} 和 ${idx})`);
+          }else{
+            groupNames.set(g.name, idx);
+          }
+
+          // 验证proxy-group中的proxies引用
+          if(Array.isArray(g.proxies)){
+            const proxySet = new Set((cfg.proxies||[]).map(p=>p.name));
+            const builtin = new Set([...CONSTANTS.BUILTIN_PROXIES]);
+            g.proxies.forEach(pname => {
+              if(!builtin.has(pname) && !proxySet.has(pname)){
+                // 检查是否是另一个proxy-group的名称
+                if(!groupNames.has(pname)){
+                  warnings.push(`ProxyGroup "${g.name}" 引用了不存在的代理/组: ${pname}`);
+                }
+              }
+            });
+          }
+        });
+      }
+
+      // 验证内置代理没有被错误地添加到proxies数组
+      if(Array.isArray(cfg.proxies)){
+        const foundBuiltins = cfg.proxies.filter(p => Utils.isBuiltinProxy(p.name));
+        if(foundBuiltins.length > 0){
+          const names = foundBuiltins.map(p => p.name).join(", ");
+          errors.push(`内置特殊代理不能在proxies数组中定义: ${names}`);
+        }
+      }
+
+      if(errors.length > 0){
+        Logger.error("Config.FinalValidate",`发现 ${errors.length} 个错误:`);
+        errors.forEach(err => Logger.error("Config.FinalValidate", `  - ${err}`));
+      }
+      if(warnings.length > 0){
+        Logger.warn("Config.FinalValidate",`发现 ${warnings.length} 个警告:`);
+        warnings.forEach(warn => Logger.warn("Config.FinalValidate", `  - ${warn}`));
+      }
+
+      return {
+        valid: errors.length === 0,
+        errors,
+        warnings
+      };
     }
     static _validate(cfg){
       const p=cfg.proxies||[];
@@ -1379,26 +1583,55 @@ const Sirkey = (() => {
 
     static _ensureSystemProxies(cfg){
       if(!Array.isArray(cfg.proxies)) cfg.proxies = [];
+
+      // 验证并清理proxies数组中的内置特殊代理和重复名称
+      const originalLength = cfg.proxies.length;
+      cfg.proxies = Utils.filterBuiltinProxies(cfg.proxies);
+
+      // 验证代理名称
+      const {valid, invalid, duplicates} = Utils.validateProxyNames(cfg.proxies);
+      if(invalid.length > 0){
+        const reasons = invalid.map(i => `${i.name || '未知'}(${i.reason})`).join(", ");
+        Logger.warn("Config.EnsureSystemProxies",`检测到 ${invalid.length} 个无效代理: ${reasons}`);
+      }
+      if(duplicates.size > 0){
+        const dupList = Array.from(duplicates.entries()).map(([name, idxs]) => `${name}(${idxs.length}个)`).join(", ");
+        Logger.warn("Config.EnsureSystemProxies",`检测到重复代理名称: ${dupList}`);
+      }
+
+      // 只保留有效的代理
+      cfg.proxies = valid;
+
+      if(cfg.proxies.length !== originalLength){
+        Logger.info("Config.EnsureSystemProxies",`清理代理: ${originalLength} → ${cfg.proxies.length}`);
+      }
     }
 
     static _buildProxyGroups(cfg,regionNames,regionGroups,otherNames){
       const base=Utils.getProxyGroupBase();
       const groups=[];
-      groups.push({...base,name:"默认节点",type:"select",proxies:[...regionNames,"DIRECT"],icon:ICON_VAL(ICONS.Proxy)});
-      groups.push({...base,name:"🚀 规则更新",type:"select",proxies:regionNames.length?[...regionNames]:["DIRECT"],icon:ICON_VAL(ICONS.Update)});
+
+      // 使用safeAddNames安全地添加代理名称，自动过滤内置代理
+      const defaultProxiesWithDirect = Utils.safeAddNames(regionNames, ["DIRECT"]);
+      groups.push({...base,name:"默认节点",type:"select",proxies:defaultProxiesWithDirect,icon:ICON_VAL(ICONS.Proxy)});
+
+      const updateProxies = regionNames.length ? Utils.safeAddNames(regionNames, ["DIRECT"]) : ["DIRECT"];
+      groups.push({...base,name:"🚀 规则更新",type:"select",proxies:updateProxies,icon:ICON_VAL(ICONS.Update)});
+
       const services=Array.isArray(Config.services)?Config.services:[];
       const defaultOrder=["默认节点","国内网站","DIRECT","REJECT"];
       services.forEach(svc=>{
         try{
           const name=svc.name||svc.id; if(!name) return;
           const baseOrder = Array.isArray(svc.proxiesOrder)?svc.proxiesOrder:(Array.isArray(svc.proxies)?svc.proxies:defaultOrder);
-          const proxies=Utils.unique([...(baseOrder||[]),...regionNames]);
+          const proxies=Utils.safeAddNames(regionNames, baseOrder);
           groups.push({...base,name,type:"select",proxies,icon:ICON_VAL(svc.icon)});
         }catch(e){Logger.warn("Config.ServiceGroup",svc?.id,e.message||e);}
       });
       (Config.common?.defaultProxyGroups||[]).forEach(g=>{
         if(!g?.name) return;
-        groups.push({...base,name:g.name,type:"select",proxies:[...(Array.isArray(g.proxies)?g.proxies:[]),...regionNames],icon:ICON_VAL(g.icon)});
+        const proxies=Utils.safeAddNames(regionNames, Array.isArray(g.proxies)?g.proxies:[]);
+        groups.push({...base,name:g.name,type:"select",proxies,icon:ICON_VAL(g.icon)});
       });
       if(regionGroups.length){
         regionGroups.forEach(g=>{if(g.type==="url-test"||g.type==="fallback") Object.assign(g,{...base,tolerance:50});});
