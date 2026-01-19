@@ -177,7 +177,7 @@ const Sirkey = (() => {
         interval: Config.common?.proxyGroup?.interval ?? 300,
         timeout: Config.common?.proxyGroup?.timeout ?? 3000,
         url: Config.common?.proxyGroup?.url ?? "https://cp.cloudflare.com/generate_204",
-        lazy: Config.common?.proxyGroup?.lazy !== false
+        lazy: Config.common?.proxyGroup?.lazy ?? true  // 默认 true，可通过 Config 覆盖
       };
     },
     unique: arr => Array.from(new Set(arr)),
@@ -1453,7 +1453,9 @@ const Sirkey = (() => {
         name: "自动选择",
         type: "url-test",  // 只有自动选择是 url-test
         "include-all": true,
-        tolerance: 50,
+        tolerance: 100,  // 100ms 容差，更保守的切换策略
+        "expected-status": "204",  // 明确期望 HTTP 204 状态码
+        lazy: false,  // 主动测速，保持实时数据
         icon: ICON_VAL(ICONS.Proxy)
       };
 
@@ -2174,4 +2176,3 @@ const Sirkey = (() => {
     main, CentralManager, ConfigBuilder, AIEngine
   };
 })();
-
