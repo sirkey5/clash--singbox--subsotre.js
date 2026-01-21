@@ -177,7 +177,32 @@ const Sirkey = (() => {
         interval: Config.common?.proxyGroup?.interval ?? 300,
         timeout: Config.common?.proxyGroup?.timeout ?? 3000,
         url: Config.common?.proxyGroup?.url ?? "https://cp.cloudflare.com/generate_204",
-        lazy: Config.common?.proxyGroup?.lazy ?? true  // 默认 true，可通过 Config 覆盖
+        lazy: Config.common?.proxyGroup?.lazy ?? true,  // 默认 true，可通过 Config 覆盖
+        "max-failed-times": Config.common?.proxyGroup?.maxFailedTimes ?? 3,  // 🔧 关键修复：连续失败3次后标记为不可用
+        "expected-status": "204"  // 期望的 HTTP 状态码
+      };
+    },
+    /**
+     * 🔧 新增：根据场景获取专门的故障检测配置
+     * @param {string} scene - 场景类型：gaming, streaming, browsing, download
+     * @returns {object} 场景化的代理组配置
+     */
+    getSceneConfig(scene = "browsing") {
+      const base = Utils.getProxyGroupBase();
+      const sceneConfig = Config.failureDetection?.[scene];
+      
+      if (!sceneConfig) {
+        Logger.debug("Utils.getSceneConfig", `未找到场景 ${scene} 的配置，使用默认配置`);
+        return base;
+      }
+      
+      return {
+        ...base,
+        "max-failed-times": sceneConfig.maxFailedTimes,
+        interval: sceneConfig.interval,
+        tolerance: sceneConfig.tolerance,
+        timeout: sceneConfig.timeout,
+        lazy: false  // 场景化配置强制使用主动测速
       };
     },
     unique: arr => Array.from(new Set(arr)),
@@ -526,9 +551,28 @@ const Sirkey = (() => {
       },
       "geox-url":{geoip:()=>URLS.geox.geoip(),geosite:()=>URLS.geox.geosite(),mmdb:()=>URLS.geox.mmdb(),asn:()=>URLS.geox.asn()}
     },
-    common:{ ruleProvider:{ type:"http", interval:86400 }, proxyGroup:{ interval:300, timeout:3000, url:"https://cp.cloudflare.com/generate_204", lazy:true }, defaultProxyGroups:[{ name:"国内网站", icon:ICONS.StreamingCN, proxies:["DIRECT","手动选择"] }], postRules:["GEOSITE,private,DIRECT","GEOIP,private,DIRECT,no-resolve","RULE-SET,ls_cn,国内网站","RULE-SET,acl4ssr_china,国内网站","GEOSITE,cn,国内网站","GEOIP,cn,国内网站,no-resolve","MATCH,其他节点"] },
+    common:{ 
+      ruleProvider:{ type:"http", interval:86400 }, 
+      proxyGroup:{ 
+        interval:300, 
+        timeout:3000, 
+        url:"https://cp.cloudflare.com/generate_204", 
+        lazy:true,
+        maxFailedTimes: 3  // 🔧 新增：默认故障检测阈值
+      }, 
+      defaultProxyGroups:[{ name:"国内网站", icon:ICONS.StreamingCN, proxies:["DIRECT","手动选择"] }], 
+      postRules:["GEOSITE,private,DIRECT","GEOIP,private,DIRECT,no-resolve","RULE-SET,ls_cn,国内网站","RULE-SET,acl4ssr_china,国内网站","GEOSITE,cn,国内网站","GEOIP,cn,国内网站,no-resolve","MATCH,其他节点"] 
+    },
+    // 🔧 新增：场景化故障检测配置
+    failureDetection: {
+      gaming: { maxFailedTimes: 2, interval: 180, tolerance: 30, timeout: 3000 },      // 游戏：低延迟优先
+      streaming: { maxFailedTimes: 5, interval: 300, tolerance: 100, timeout: 8000 },  // 流媒体：稳定性优先
+      browsing: { maxFailedTimes: 3, interval: 300, tolerance: 50, timeout: 5000 },    // 浏览：平衡
+      download: { maxFailedTimes: 4, interval: 300, tolerance: 80, timeout: 6000 }     // 下载：带宽优先
+    },
     performance: { heavyProxyThreshold: 800, ioBudgetPerTick: 16 }
   };
+
 
   /* ========== 7. 基础组件 (Core Components) ========== */
   
@@ -990,6 +1034,128 @@ const Sirkey = (() => {
     }
 
     /**
+     * 🔧 新增：AI 优选组专用筛选逻辑
+     * 准入规则：
+     * 1. 目标数量：100 个节点
+     * 2. 评分标准：优先 75 分以上，不足则降级到 65 分，最低 40 分
+     * 3. 容纳上限：最多 100 个节点
+     * 4. 退出机制：连续评分低于 40 分的节点自动清退
+     * 
+     * @param {Array} proxies - 所有代理节点
+     * @returns {Array} 筛选后的节点名称列表
+     */
+    getBestNodesForPremiumGroup(proxies) {
+      if (!proxies || !proxies.length) {
+        Logger.warn("AIEngine.Premium", "无可用节点");
+        return ["DIRECT"];
+      }
+      
+      try {
+        const TARGET_COUNT = 100;  // 目标数量：100 个
+        const MAX_COUNT = 100;     // 容纳上限：100 个
+        const MIN_SCORE = 40;      // 最低评分标准：40 分（劣质节点阈值）
+        
+        Logger.info("AIEngine.Premium", `开始筛选 AI 优选组: 总节点数 ${proxies.length}, 目标 ${TARGET_COUNT} 个`);
+
+        // 1. 评分并过滤劣质节点
+        const candidates = proxies.map(p => {
+          const score = this.score(p);
+          const name = typeof p === 'string' ? p : String(p.name || "");
+          const stats = this._stats ? this._stats.getStats(p) : { failCount: 0, successCount: 0 };
+          
+          return {
+            id: name,
+            score: score,
+            proxy: p,
+            server: p.server || "",
+            failCount: stats.failCount,
+            successCount: stats.successCount
+          };
+        }).filter(item => {
+          // 退出机制：连续失败的节点直接排除
+          if (item.failCount > 0) {
+            Logger.debug("AIEngine.Premium", `节点 ${item.id} 因故障被排除 (失败次数: ${item.failCount})`);
+            return false;
+          }
+          
+          // 最低评分标准：低于 40 分的劣质节点直接排除
+          if (item.score < MIN_SCORE) {
+            Logger.debug("AIEngine.Premium", `节点 ${item.id} 因评分过低被排除 (评分: ${item.score})`);
+            return false;
+          }
+          
+          return true;
+        }).sort((a, b) => b.score - a.score);  // 按评分降序排列
+
+        if (candidates.length === 0) {
+          Logger.error("AIEngine.Premium", "所有节点均不符合最低标准 (评分 < 40 或存在故障)");
+          return ["DIRECT"];
+        }
+
+        // 2. 分层筛选：75 分 -> 65 分 -> 40 分
+        const excellentNodes = candidates.filter(item => item.score >= this._SCORE_THRESHOLDS.EXCELLENT);  // 75+
+        const goodNodes = candidates.filter(item => item.score >= this._SCORE_THRESHOLDS.GOOD && item.score < this._SCORE_THRESHOLDS.EXCELLENT);  // 65-74
+        const acceptableNodes = candidates.filter(item => item.score >= MIN_SCORE && item.score < this._SCORE_THRESHOLDS.GOOD);  // 40-64
+
+        Logger.info("AIEngine.Premium", `节点分层: 优质(75+)=${excellentNodes.length}, 良好(65-74)=${goodNodes.length}, 可接受(40-64)=${acceptableNodes.length}`);
+
+        let selectedNodes = [];
+
+        // 3. 准入逻辑：优先高分节点，不足则降级
+        if (excellentNodes.length >= TARGET_COUNT) {
+          // 情况 1: 优质节点充足，直接取前 100 个
+          selectedNodes = excellentNodes.slice(0, TARGET_COUNT);
+          Logger.info("AIEngine.Premium", `✅ 优质节点充足，选取前 ${TARGET_COUNT} 个 (评分 75+)`);
+          
+        } else if (excellentNodes.length + goodNodes.length >= TARGET_COUNT) {
+          // 情况 2: 优质+良好节点达标，混合选取
+          selectedNodes = [...excellentNodes, ...goodNodes].slice(0, TARGET_COUNT);
+          Logger.info("AIEngine.Premium", `✅ 降级到良好标准，选取 ${excellentNodes.length} 个优质 + ${selectedNodes.length - excellentNodes.length} 个良好节点`);
+          
+        } else if (candidates.length >= TARGET_COUNT) {
+          // 情况 3: 包含可接受节点才达标，全部混合
+          selectedNodes = candidates.slice(0, TARGET_COUNT);
+          Logger.warn("AIEngine.Premium", `⚠️ 降级到可接受标准，选取 ${excellentNodes.length} 个优质 + ${goodNodes.length} 个良好 + ${selectedNodes.length - excellentNodes.length - goodNodes.length} 个可接受节点`);
+          
+        } else {
+          // 情况 4: 总数不足 100 个，全部选取
+          selectedNodes = candidates;
+          Logger.warn("AIEngine.Premium", `⚠️ 可用节点不足 ${TARGET_COUNT} 个，选取全部 ${selectedNodes.length} 个节点`);
+        }
+
+        // 4. 容纳上限：确保不超过 100 个
+        if (selectedNodes.length > MAX_COUNT) {
+          selectedNodes = selectedNodes.slice(0, MAX_COUNT);
+          Logger.warn("AIEngine.Premium", `⚠️ 节点数超过上限，截取前 ${MAX_COUNT} 个`);
+        }
+
+        // 5. 多样性过滤：确保节点来自不同服务器和集群
+        const diversityFiltered = this._applyDiversityFilter(selectedNodes, Math.min(selectedNodes.length, MAX_COUNT));
+
+        // 6. 统计信息
+        const avgScore = diversityFiltered.reduce((sum, item) => sum + item.score, 0) / diversityFiltered.length;
+        const minScore = Math.min(...diversityFiltered.map(item => item.score));
+        const maxScore = Math.max(...diversityFiltered.map(item => item.score));
+        
+        Logger.info("AIEngine.Premium", `✅ AI 优选组筛选完成: ${diversityFiltered.length} 个节点`);
+        Logger.info("AIEngine.Premium", `📊 评分统计: 平均 ${avgScore.toFixed(1)}, 最高 ${maxScore.toFixed(1)}, 最低 ${minScore.toFixed(1)}`);
+
+        return diversityFiltered.map(s => s.id);
+        
+      } catch (e) {
+        Logger.error("AIEngine.Premium", `筛选异常: ${e.message}`);
+        // 异常降级：返回评分最高的 10 个节点
+        const emergency = proxies
+          .map(p => ({ name: p.name || p, score: this.score(p) }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 10)
+          .map(item => item.name);
+        Logger.warn("AIEngine.Premium", `异常降级: 返回评分最高的 ${emergency.length} 个节点`);
+        return emergency.length > 0 ? emergency : ["DIRECT"];
+      }
+    }
+
+    /**
      * 多样性过滤：确保节点来自不同服务器、ASN和集群
      * 简化版：只在外层添加异常处理
      */
@@ -1417,7 +1583,8 @@ const Sirkey = (() => {
       const base=Utils.getProxyGroupBase();
       let bestIds = [];
       if(Config.aiOptions?.enable && list.length){
-        bestIds = this._ai.getBestNodes(list);
+        // 🔧 使用专门的 AI 优选组筛选逻辑
+        bestIds = this._ai.getBestNodesForPremiumGroup(list);
       }
 
       const bestNodesGroup = {
@@ -1453,11 +1620,17 @@ const Sirkey = (() => {
         name: "自动选择",
         type: "url-test",  // 只有自动选择是 url-test
         "include-all": true,
-        tolerance: 100,  // 100ms 容差，更保守的切换策略
+        tolerance: 50,  // 🔧 修复：降低容差到50ms，更快响应延迟变化
+        "max-failed-times": 3,  // 🔧 关键修复：连续失败3次后自动切换
         "expected-status": "204",  // 明确期望 HTTP 204 状态码
         lazy: false,  // 主动测速，保持实时数据
+        interval: 300,  // 测速间隔（秒）
+        timeout: 5000,  // 单次测速超时（毫秒）
         icon: ICON_VAL(ICONS.Proxy)
       };
+      
+      // 🔧 新增：记录故障检测配置
+      Logger.info("FailureDetection", `自动选择组配置: max-failed-times=${autoSelectionGroup["max-failed-times"]}, tolerance=${autoSelectionGroup.tolerance}ms, interval=${autoSelectionGroup.interval}s, timeout=${autoSelectionGroup.timeout}ms`);
 
       // 其他节点组：包含未匹配的节点 + 提供代理选择（用于 MATCH 兜底）
       // 关键：第一项是"手动选择"，确保 MATCH 规则默认不会被"夺权"
