@@ -1,14 +1,12 @@
 /**
- * Mihomo 深度优化脚本 v4.6-2026.01.13-fixed (智能后台预检版)
+ * Mihomo 深度优化脚本 v4.6-2026.01.13-fixed
  * 
- * [核心特性]
- * 1. 异步兼容：main 函数同步返回，完美适配所有 GUI 与移动端内核。
- * 2. 静默探测：在支持异步的环境下（如 Clash Verge）自动执行后台非阻塞测速。
- * 3. 闭环优化：结合历史统计与 AI 评分进行节点筛选，后台探测结果实时反馈至全局。
- * 4. 智能感知：自动识别运行环境，动态调整预检策略与分流逻辑。
- * 5. AI 优选：工程化 AI 决策内核，75分优质标准，65分兜底机制，75% AI + 25% 随机混合策略。
- * 6. 地理分组：自动识别节点地理位置，智能创建区域分组，港澳台统一管理。
- * 7. 功能分组：10大业务场景分组（AI、流媒体、游戏、社交等），智能路由分流。
+ * 核心特性：
+ * - 异步兼容 + 静默探测
+ * - AI 评分体系（8维度，满分100分）：基础10 + 协议20 + 性能20 + 稳定15 + 地理15 + 服务器10 + 语义10 + 动态±20
+ * - 准入标准：85分优质 / 70分良好 / 55分最低
+ * - 服务器白名单：50+ 提供商（S/A/B三级）
+ * - 免费节点友好：不因域名类型歧视性扣分
  */
 
 "use strict";
@@ -25,7 +23,7 @@ const Sirkey = (() => {
     root.console = { log: () => {}, info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
   }
 
-  /* ========== 1. 环境与常量 (Env & Constants) ========== */
+  /* 环境与常量 */
   const Env = (() => {
     const isMihomo = typeof log === "function";
     const canAsync = typeof setTimeout === "function";
@@ -58,7 +56,7 @@ const Sirkey = (() => {
     DEBUG: false
   });
 
-  /* ========== 2. 日志与脱敏 (Logger & Masker) ========== */
+  /* 日志与脱敏 */
   const DataMasker = {
     maskUrl: (url) => typeof url === "string" ? url.replace(CONSTANTS.RE.URL_MASK, "$1***") : url,
     maskIPStr(str) {
@@ -89,9 +87,7 @@ const Sirkey = (() => {
   const Logger = new (class {
     _levelMap = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
     _currentLevel = CONSTANTS.DEBUG ? 0 : 1;
-    /**
-     * 多级降级日志输出：适配 Mihomo 与标准 Console
-     */
+    
     log(level, ctx, ...args) {
       if (this._levelMap[level] < this._currentLevel) return;
       const prefix = `[${level}] [${ctx || "Global"}]`;
@@ -116,18 +112,16 @@ const Sirkey = (() => {
     warn(c,...a){this.log("WARN",c,...a);}  debug(c,...a){this.log("DEBUG",c,...a);}
   })();
 
-  /* ========== 3. 通用工具 (Utils) ========== */
+  /* 通用工具 */
   const Utils = {
     now: Date.now,
     clamp: (v,min,max)=>v<min?min:(v>max?max:v),
     sleep: ms => new Promise(r=>setTimeout(r,ms)),
     deepClone(obj, keyName=null, seen = new WeakMap(), depth = 0) {
-      // 添加最大深度限制，防止栈溢出
       const MAX_DEPTH = 10;
       
       if (depth > MAX_DEPTH) {
         Logger.warn("Utils.deepClone", `达到最大深度限制 ${MAX_DEPTH}，停止递归`);
-        // 修复：返回 null 而不是原对象，避免引用污染
         return null;
       }
       
@@ -177,16 +171,12 @@ const Sirkey = (() => {
         interval: Config.common?.proxyGroup?.interval ?? 300,
         timeout: Config.common?.proxyGroup?.timeout ?? 3000,
         url: Config.common?.proxyGroup?.url ?? "https://cp.cloudflare.com/generate_204",
-        lazy: Config.common?.proxyGroup?.lazy ?? true,  // 默认 true，可通过 Config 覆盖
-        "max-failed-times": Config.common?.proxyGroup?.maxFailedTimes ?? 3,  // 🔧 关键修复：连续失败3次后标记为不可用
-        "expected-status": "204"  // 期望的 HTTP 状态码
+        lazy: Config.common?.proxyGroup?.lazy ?? true,
+        "max-failed-times": Config.common?.proxyGroup?.maxFailedTimes ?? 3,
+        "expected-status": "204"
       };
     },
-    /**
-     * 🔧 新增：根据场景获取专门的故障检测配置
-     * @param {string} scene - 场景类型：gaming, streaming, browsing, download
-     * @returns {object} 场景化的代理组配置
-     */
+    
     getSceneConfig(scene = "browsing") {
       const base = Utils.getProxyGroupBase();
       const sceneConfig = Config.failureDetection?.[scene];
@@ -202,7 +192,7 @@ const Sirkey = (() => {
         interval: sceneConfig.interval,
         tolerance: sceneConfig.tolerance,
         timeout: sceneConfig.timeout,
-        lazy: false  // 场景化配置强制使用主动测速
+        lazy: false
       };
     },
     unique: arr => Array.from(new Set(arr)),
@@ -228,7 +218,7 @@ const Sirkey = (() => {
     }
   };
 
-  /* ========== 4. 存储与异常 (Storage & Exceptions) ========== */
+  /* 存储与异常 */
   const PersistentStorage = new (class {
     constructor(){
       this._memoryCache = new Map();
@@ -238,22 +228,21 @@ const Sirkey = (() => {
     delete(key){ return this._memoryCache.delete(key); }
   })();
 
-  /* ========== 5. 镜像与资源 (Mirrors & Resources) ========== */
+  /* 镜像与资源 */
   class SirkeyError extends Error { constructor(m,c="INTERNAL_ERROR"){super(m);this.name="SirkeyError";this.code=c;this.timestamp=Date.now();} }
   class ConfigurationError extends SirkeyError { constructor(m){super(m,"CONFIG_ERROR");} }
   class InvalidRequestError extends SirkeyError { constructor(m){super(m,"INVALID_REQUEST");} }
 
-  // 多镜像配置：优先使用 jsDelivr，失败时自动降级
   const MIRROR_CONFIG = {
-    primary: "https://cdn.jsdelivr.net/gh/",     // 主镜像：jsDelivr（最稳定）
-    fallbacks: [                                  // 备用镜像列表
+    primary: "https://cdn.jsdelivr.net/gh/",
+    fallbacks: [
       "https://ghproxy.net/",
       "https://mirror.ghproxy.com/",
       "https://github.moeyy.xyz/",
       "https://gh.api.99988866.xyz/",
-      ""  // 最后直连 GitHub
+      ""
     ],
-    current: "https://cdn.jsdelivr.net/gh/"      // 当前使用的镜像
+    current: "https://cdn.jsdelivr.net/gh/"
   };
 
   let GH_PROXY = MIRROR_CONFIG.current;
@@ -263,10 +252,6 @@ const Sirkey = (() => {
 
   const ICON_VAL = (f)=>{try{return typeof f==="function"?f():(f??"");}catch{return"";}};
 
-  /**
-   * ICONS 动态代理 - 修复闭包陷阱
-   * 不再缓存 URL 函数，每次都动态生成以反映最新的 GH_PROXY
-   */
   const ICONS = (() => {
     const base = "https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color";
     const map = {
@@ -284,24 +269,17 @@ const Sirkey = (() => {
       Australia:"Australia",Apple2:"Apple",GitHub:"GitHub",Advertising:"Privacy",Premium:"Global"
     };
     
-    // 修复：不再缓存，每次动态生成 URL 以反映最新的 GH_PROXY
     return new Proxy({},{
       get(_,n){
-        // 每次访问都返回新的函数，该函数会读取当前的 GH_PROXY
         return () => `${GH_PROXY}${base}/${map[n]??n}.png`;
       }
     });
   })();
 
   const URLS = {
-    /**
-     * 智能镜像 URL 转换
-     * 支持 jsDelivr CDN 和其他 GitHub 镜像
-     */
     _getMirrorUrl(original){
       if(!GH_PROXY) return original;
       
-      // 清理已有的镜像前缀
       let clean = original;
       for(const m of CONSTANTS.GH.MIRRORS){
         if(m && clean.startsWith(m)){
@@ -310,16 +288,13 @@ const Sirkey = (() => {
         }
       }
       
-      // jsDelivr CDN 特殊处理（需要特定格式）
       if(GH_PROXY.includes("jsdelivr.net")){
-        // 处理 raw.githubusercontent.com 格式
         const rawMatch = clean.match(CONSTANTS.RE.GH_RAW);
         if(rawMatch){
           const [,user,repo,branch,path]=rawMatch;
           return `https://cdn.jsdelivr.net/gh/${user}/${repo}@${branch}/${path}`;
         }
         
-        // 处理 github.com releases 格式
         const releaseMatch = clean.match(CONSTANTS.RE.GH_RELEASE);
         if(releaseMatch){
           const [,user,repo,tag,file]=releaseMatch;
@@ -327,7 +302,6 @@ const Sirkey = (() => {
         }
       }
       
-      // 其他镜像：直接拼接
       const base = GH_PROXY.endsWith("/")?GH_PROXY:GH_PROXY+"/";
       const path = clean.startsWith("/")?clean.slice(1):clean;
       return base+path;
@@ -338,7 +312,6 @@ const Sirkey = (() => {
       mmdb:()=>URLS._getMirrorUrl("https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"),
       asn:()=>URLS._getMirrorUrl("https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/asn.mmdb")
     },
-    // 解决方案5：简化镜像URL生成，统一使用 _getMirrorUrl
     mrs(name){
       const baseUrl = `https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/${name}.mrs`;
       return this._getMirrorUrl(baseUrl);
@@ -348,7 +321,6 @@ const Sirkey = (() => {
       return this._getMirrorUrl(baseUrl);
     },
     rulesets:{
-      // ========== 1. MetaCubeX (MRS格式 - 性能最优，Mihomo官方推荐) ==========
       ai:()=>URLS.mrs("category-ai-!cn"),
       ads:()=>URLS.mrs("category-ads-all"),
       trackers:()=>URLS.mrs("tracker"),
@@ -374,7 +346,6 @@ const Sirkey = (() => {
       proxy:()=>URLS.mrs("proxy"),
       gfw:()=>URLS.mrs("gfw"),
       
-      // ========== 2. Loyalsoldier (中国大陆优化，17k+ stars) ==========
       loyalsoldier:{
         reject:()=>URLS.list("reject"),
         icloud:()=>URLS.list("icloud"),
@@ -390,7 +361,6 @@ const Sirkey = (() => {
         cn:()=>URLS.list("direct")
       },
       
-      // ========== 3. Blackmatrix7 (最全面规则集，35k+ stars) ==========
       blackmatrix7:{
         openai:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OpenAI/OpenAI.yaml"),
         claude:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Claude/Claude.yaml"),
@@ -410,19 +380,17 @@ const Sirkey = (() => {
         hijacking:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Hijacking/Hijacking.yaml")
       },
       
-      // ========== 4. ACL4SSR (稳定分流，保守策略) ==========
       acl4ssr:{
         ban:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanAD.list"),
         china:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaDomain.list"),
         lan:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.list")
       },
       
-      // ========== 5. Anti-AD (广告拦截增强，中文广告最强) ==========
       anti_ad:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-clash.yaml")
     }
   };
 
-  /* ========== 6. 全局配置 (Global Configuration) ========== */
+  /* 全局配置 */
   const Config = {
     autoIntervention: true, adaptive: true, enable: true,
     privacy: {
@@ -455,7 +423,7 @@ const Sirkey = (() => {
     ],
     regionOptions:{
       geoIpGrouping:true, autoDiscover:true, excludeHighPercentage:true, ratioLimit:2,
-      maxRegions:10,  // 地理组上限：最多10个
+      maxRegions:10,
       regions:[
         { name:"港澳台", regex:/港|澳|台|🇭🇰|🇲🇴|🇹🇼|hk|mo|tw|hongkong|macao|macau|taiwan|hkg|tpe/i, code:"HK_MO_TW", icon:ICONS.HongKong },
         { name:"日本", regex:/日|🇯🇵|jp|japan|nrt|hnd|kix/i, code:"JP", icon:ICONS.Japan },
@@ -479,7 +447,6 @@ const Sirkey = (() => {
       "fallback-filter":{geoip:true,"geoip-code":"CN",ipcidr:["240.0.0.0/4"],domain:["+.google.com","+.facebook.com","+.youtube.com","+.githubusercontent.com"]},
       "proxy-server-nameserver":["https://223.5.5.5/dns-query","https://119.29.29.29/dns-query","https://8.8.8.8/dns-query"],
       get "nameserver-policy"() {
-        // 使用简化的 buildDNSPolicy 函数
         return typeof buildDNSPolicy !== "undefined" ? buildDNSPolicy() : {
           "geosite:private":["system"],
           "geosite:cn,steam@cn,category-games@cn,microsoft@cn,apple@cn":["119.29.29.29","223.5.5.5"],
@@ -526,18 +493,18 @@ const Sirkey = (() => {
       { id:"ads",      rule:["RULE-SET,ads,REJECT"], name:"广告过滤", icon:ICONS.Advertising, proxies:["REJECT","DIRECT","手动选择"], ruleProvider:{ name:"ads", url:()=>URLS.rulesets.ads(), behavior:"domain" } }
     ],
     functionalGroups: [
-      { id:"ai_group", name:"AI组", icon:ICONS.ChatGPT, services:["openai","claude","gemini"], proxiesOrder:["手动选择","自动选择","AI优选","DIRECT"] },
-      { id:"streaming_group", name:"流媒体组", icon:ICONS.StreamingNotCN, services:["youtube","netflix","disney","hbo","hulu","primevideo","tiktok","biliintl","bahamut","tvb","pixiv","streaming"], proxiesOrder:["手动选择","自动选择","AI优选","DIRECT"] },
-      { id:"finance_group", name:"金融组", icon:ICONS.Premium, services:["finance"], proxiesOrder:["手动选择","自动选择","AI优选","DIRECT"] },
-      { id:"gaming_group", name:"游戏组", icon:ICONS.Game, services:["steam","epic","games"], proxiesOrder:["手动选择","自动选择","AI优选","DIRECT"] },
-      { id:"download_group", name:"下载组", icon:ICONS.Download, services:["speedtest"], proxiesOrder:["手动选择","自动选择","AI优选","DIRECT"] },
-      { id:"download_software_group", name:"下载软件", icon:ICONS.Download, services:["applications"], proxiesOrder:["DIRECT","手动选择","自动选择","AI优选"] },
-      { id:"social_group", name:"社交组", icon:ICONS.Telegram, services:["telegram","discord","whatsapp","line","slack"], proxiesOrder:["手动选择","自动选择","AI优选","DIRECT"] },
-      { id:"search_group", name:"搜索组", icon:ICONS.GoogleSearch, services:["google"], proxiesOrder:["手动选择","自动选择","AI优选","DIRECT"] },
-      { id:"dev_group", name:"开发组", icon:ICONS.GitHub, services:["github","scholar"], proxiesOrder:["手动选择","自动选择","AI优选","DIRECT"] },
-      { id:"email_group", name:"邮件组", icon:ICONS.Microsoft, services:["microsoft","apple"], proxiesOrder:["手动选择","自动选择","AI优选","DIRECT"] },
-      { id:"music_group", name:"音乐组", icon:ICONS.Spotify, services:["spotify"], proxiesOrder:["手动选择","自动选择","AI优选","DIRECT"] },
-      { id:"browsing_group", name:"浏览组", icon:ICONS.Proxy, services:["proxy","gfw"], proxiesOrder:["手动选择","自动选择","AI优选","DIRECT"] }
+      { id:"ai_group", name:"AI组", icon:ICONS.ChatGPT, services:["openai","claude","gemini"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"streaming_group", name:"流媒体组", icon:ICONS.StreamingNotCN, services:["youtube","netflix","disney","hbo","hulu","primevideo","tiktok","biliintl","bahamut","tvb","pixiv","streaming"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"finance_group", name:"金融组", icon:ICONS.Premium, services:["finance"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"gaming_group", name:"游戏组", icon:ICONS.Game, services:["steam","epic","games"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"download_group", name:"下载组", icon:ICONS.Download, services:["speedtest"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"download_software_group", name:"下载软件", icon:ICONS.Download, services:["applications"], proxiesOrder:["DIRECT","手动选择","自动选择","智能优选"] },
+      { id:"social_group", name:"社交组", icon:ICONS.Telegram, services:["telegram","discord","whatsapp","line","slack"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"search_group", name:"搜索组", icon:ICONS.GoogleSearch, services:["google"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"dev_group", name:"开发组", icon:ICONS.GitHub, services:["github","scholar"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"email_group", name:"邮件组", icon:ICONS.Microsoft, services:["microsoft","apple"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"music_group", name:"音乐组", icon:ICONS.Spotify, services:["spotify"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"browsing_group", name:"浏览组", icon:ICONS.Proxy, services:["proxy","gfw"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] }
     ],
     system:{
       "allow-lan":true, mode:"rule", "unified-delay":true, "tcp-concurrent":true, "geodata-mode":true,
@@ -563,20 +530,17 @@ const Sirkey = (() => {
       defaultProxyGroups:[{ name:"国内网站", icon:ICONS.StreamingCN, proxies:["DIRECT","手动选择"] }], 
       postRules:["GEOSITE,private,DIRECT","GEOIP,private,DIRECT,no-resolve","RULE-SET,ls_cn,国内网站","RULE-SET,acl4ssr_china,国内网站","GEOSITE,cn,国内网站","GEOIP,cn,国内网站,no-resolve","MATCH,其他节点"] 
     },
-    // 🔧 新增：场景化故障检测配置
     failureDetection: {
-      gaming: { maxFailedTimes: 2, interval: 180, tolerance: 30, timeout: 3000 },      // 游戏：低延迟优先
-      streaming: { maxFailedTimes: 5, interval: 300, tolerance: 100, timeout: 8000 },  // 流媒体：稳定性优先
-      browsing: { maxFailedTimes: 3, interval: 300, tolerance: 50, timeout: 5000 },    // 浏览：平衡
-      download: { maxFailedTimes: 4, interval: 300, tolerance: 80, timeout: 6000 }     // 下载：带宽优先
+      gaming: { maxFailedTimes: 2, interval: 180, tolerance: 30, timeout: 3000 },
+      streaming: { maxFailedTimes: 5, interval: 300, tolerance: 100, timeout: 8000 },
+      browsing: { maxFailedTimes: 3, interval: 300, tolerance: 50, timeout: 5000 },
+      download: { maxFailedTimes: 4, interval: 300, tolerance: 80, timeout: 6000 }
     },
     performance: { heavyProxyThreshold: 800, ioBudgetPerTick: 16 }
   };
 
-
-  /* ========== 7. 基础组件 (Core Components) ========== */
+  /* 基础组件 */
   
-  /* LRU 三层缓存 */
   class LRUCache {
     constructor({maxSize=300,ttl=3600000,persist=null}={}) {
       this._l1=new Map();
@@ -586,7 +550,7 @@ const Sirkey = (() => {
       this._h=0; this._m=0;
       this._persist = (persist !== null) ? !!persist : !!(Config.aiOptions?.cache?.persistence);
       this._pendingWrites = new Map();
-      this._maxPendingWrites = 1000; // 添加队列大小限制，防止无限增长
+      this._maxPendingWrites = 1000;
     }
 
     _entry(v,ttl){return {value:v,timestamp:Date.now(),ttl:ttl||this._ttl};}
@@ -614,7 +578,6 @@ const Sirkey = (() => {
       this._evict();
       if(persist && this._persist){
         try{
-          // 检查队列大小，防止内存泄漏
           if (this._pendingWrites.size >= this._maxPendingWrites) {
             Logger.warn("LRU.Set", `待写入队列已满 (${this._maxPendingWrites})，强制刷新`);
             this.flushPersistence(50, false);
@@ -665,7 +628,7 @@ const Sirkey = (() => {
       if(!this._persist || !this._pendingWrites.size) return;
       const iter = this._pendingWrites.entries();
       let count = 0;
-      const limit = force ? Infinity : ioBudget;  // force 模式下刷新所有
+      const limit = force ? Infinity : ioBudget;
       
       for(const [key, serialized] of iter){
         try{
@@ -680,10 +643,6 @@ const Sirkey = (() => {
       if(count) Logger.debug("LRU.Flush",`刷盘 ${count} 条, 剩余: ${this._pendingWrites.size}`);
     }
 
-    /**
-     * 强制刷新所有待写入数据
-     * 用于脚本退出或需要确保数据持久化的场景
-     */
     flushAll() {
       return this.flushPersistence(Infinity, true);
     }
@@ -700,20 +659,14 @@ const Sirkey = (() => {
       return this._avail;
     }
     
-    /**
-     * 镜像切换逻辑：当前镜像失败3次后自动切换到下一个
-     * 简化版：使用简单的失败计数，避免复杂的锁机制
-     */
     _handleMirrorFailure(url){
       if(!url || !GH_PROXY) return;
       
-      // 只处理 GitHub 相关的 URL
       if(!url.includes("github") && !url.includes("jsdelivr")) return;
       
       const currentCount = this._mirrorFailCount.get(GH_PROXY) || 0;
       this._mirrorFailCount.set(GH_PROXY, currentCount + 1);
       
-      // 失败3次后切换镜像
       if(currentCount + 1 >= 3){
         let currentIndex = MIRROR_CONFIG.fallbacks.indexOf(GH_PROXY);
         if(currentIndex === -1) {
@@ -743,17 +696,14 @@ const Sirkey = (() => {
             const method = opt.method || "GET";
             const resp=await fetch(url,{...opt,method,signal:ctrl?.signal});
             Logger.debug("HttpClient",`${method} ${url} ok in ${Date.now()-start}ms`);
-            // 记录成功 (如果 context 可用)
             if(opt.proxy && opt.statsManager) opt.statsManager.recordSuccess(opt.proxy);
             return resp;
           }finally{if(timer)clearTimeout(timer);}
         }
       }catch(e){
         Logger.error("HttpClient",`失败 ${url}: ${e.message}`); 
-        // 记录失败 (如果 context 可用)
         if(opt.proxy && opt.statsManager) opt.statsManager.recordFailure(opt.proxy);
         
-        // 处理镜像切换
         this._handleMirrorFailure(url);
         
         throw e;
@@ -761,15 +711,11 @@ const Sirkey = (() => {
       throw new SirkeyError("Env HTTP exec error","HTTP_CLIENT_EXEC_ERROR");
     }
 
-    /**
-     * 高并发预检探测 (HEAD 请求)
-     */
     async probeNodes(proxies, statsManager, timeout = 800, maxConcurrency = 30) {
       if (!proxies || !proxies.length) return [];
       const results = new Map();
       const checkUrl = "http://cp.cloudflare.com/generate_204";
       
-      // 分批执行，防止内存溢出或被系统判定为恶意行为
       for (let i = 0; i < proxies.length; i += maxConcurrency) {
         const batch = proxies.slice(i, i + maxConcurrency);
         await Promise.allSettled(batch.map(async (p) => {
@@ -806,9 +752,13 @@ const Sirkey = (() => {
       }
       
       const now = Date.now();
-      const interval = CONSTANTS.TIME.HOUR; // 每小时预检一次
+      const interval = CONSTANTS.TIME.HOUR;
       
       if (GLOBAL_STATS.checkInProgress) return;
+      if (GLOBAL_STATS.probeDisabled && now < (GLOBAL_STATS.probeDisabledUntil || 0)) {
+        Logger.debug("BackgroundProbe", "后台预检已禁用，跳过");
+        return;
+      }
       if (now - (GLOBAL_STATS.lastCheckTime || 0) < interval) return;
       
       Logger.info("BackgroundProbe", "触发后台静默预检 (异步非阻塞)...");
@@ -831,6 +781,9 @@ const Sirkey = (() => {
             }
           } catch (e) {
             Logger.error("BackgroundProbe", "预检执行异常", e.message);
+            GLOBAL_STATS.probeDisabled = true;
+            GLOBAL_STATS.probeDisabledUntil = Date.now() + CONSTANTS.TIME.HOUR;
+            Logger.warn("BackgroundProbe", "后台预检已禁用1小时，避免重复失败");
           } finally {
             GLOBAL_STATS.checkInProgress = false;
           }
@@ -840,30 +793,160 @@ const Sirkey = (() => {
     }
   }
 
-  /* ========== 7. 智能评分与筛选系统 (AI Engine) ========== */
+  /* 智能评分与筛选系统 */
   class AIEngine {
     constructor(statsManager) {
       this._stats = statsManager;
       this._currentScene = "browsing";
-      this._weights = {
-        KEYWORDS: {
-          "IPLC": 60, "IEPL": 55, "BGP": 35, "Premium": 45, "Vip": 40, "Special": 30,
-          "Game": 40, "Gaming": 40, "Optimization": 25, "Fast": 20, "Direct": 15,
-          "HKT": 15, "HKBN": 15, "PCCW": 15, "Oracle": 10, "Azure": 10, "GCP": 10, "AWS": 10,
-          "Limit": -15, "Free": -60, "Test": -50, "Expired": -100, "Low": -25, "Slow": -30, "Backup": -20,
-          "Maintenance": -80, "Down": -90, "Fix": -40
-        },
-        REGIONS: { "HK_MO_TW": 20, "港": 20, "澳": 20, "台": 20, "SG": 20, "JP": 15, "US": 10, "KR": 10, "UK": 5, "DE": 5 }
+      
+      this._SERVER_WHITELIST = {
+        TIER_S: [
+          { pattern: /amazonaws\.com|aws/i, name: 'AWS', score: 10 },
+          { pattern: /googleusercontent\.com|gcp\.google|cloud\.google/i, name: 'Google Cloud', score: 10 },
+          { pattern: /azure|microsoft\.com|windows\.net/i, name: 'Microsoft Azure', score: 10 },
+          { pattern: /cloudflare/i, name: 'Cloudflare', score: 10 },
+          { pattern: /akamai/i, name: 'Akamai', score: 10 },
+          { pattern: /fastly/i, name: 'Fastly', score: 10 },
+          { pattern: /aliyun\.com|alibabacloud/i, name: 'Alibaba Cloud', score: 10 },
+          { pattern: /tencentcloud|qcloud/i, name: 'Tencent Cloud', score: 10 },
+          { pattern: /huaweicloud/i, name: 'Huawei Cloud', score: 10 },
+          { pattern: /oracle\.com|oraclecloud/i, name: 'Oracle Cloud', score: 10 }
+        ],
+        
+        TIER_A: [
+          { pattern: /vultr/i, name: 'Vultr', score: 7 },
+          { pattern: /digitalocean/i, name: 'DigitalOcean', score: 7 },
+          { pattern: /linode/i, name: 'Linode', score: 7 },
+          { pattern: /contabo/i, name: 'Contabo', score: 7 },
+          { pattern: /hetzner/i, name: 'Hetzner', score: 7 },
+          { pattern: /ovh/i, name: 'OVH', score: 7 },
+          { pattern: /online\.net|scaleway/i, name: 'Scaleway', score: 7 },
+          { pattern: /dmit/i, name: 'DMIT', score: 8 },
+          { pattern: /rackspace/i, name: 'Rackspace', score: 7 },
+          { pattern: /softlayer|ibm\.com/i, name: 'IBM Cloud', score: 7 },
+          { pattern: /hkbn|hkt\.com/i, name: 'HKT/HKBN', score: 8 },
+          { pattern: /pccw/i, name: 'PCCW', score: 8 },
+          { pattern: /hgc\.com\.hk/i, name: 'HGC', score: 8 },
+          { pattern: /hk\.chinamobile/i, name: 'CMHK', score: 8 },
+          { pattern: /hutchison/i, name: 'Hutchison', score: 8 }
+        ],
+        
+        TIER_B: [
+          { pattern: /bandwagonhost|bwh/i, name: 'BandwagonHost', score: 5 },
+          { pattern: /ramnode/i, name: 'RamNode', score: 5 },
+          { pattern: /buyvm/i, name: 'BuyVM', score: 5 },
+          { pattern: /hostwinds/i, name: 'HostWinds', score: 5 },
+          { pattern: /hostdare/i, name: 'HostDare', score: 5 },
+          { pattern: /hostus/i, name: 'HostUS', score: 5 },
+          { pattern: /virmach/i, name: 'VirMach', score: 5 },
+          { pattern: /quadranet/i, name: 'QuadraNet', score: 5 },
+          { pattern: /conoha/i, name: 'ConoHa', score: 6 },
+          { pattern: /sakura/i, name: 'Sakura', score: 6 },
+          { pattern: /kddi/i, name: 'KDDI', score: 6 },
+          { pattern: /ntt\.com/i, name: 'NTT', score: 6 },
+          { pattern: /iij\.ad\.jp/i, name: 'IIJ', score: 6 },
+          { pattern: /softbank/i, name: 'SoftBank', score: 6 },
+          { pattern: /singtel/i, name: 'SingTel', score: 6 },
+          { pattern: /starhub/i, name: 'StarHub', score: 6 },
+          { pattern: /m1\.com\.sg/i, name: 'M1', score: 6 },
+          { pattern: /hinet\.net/i, name: 'HiNet', score: 6 },
+          { pattern: /seednet/i, name: 'SeedNet', score: 6 },
+          { pattern: /so-net\.net\.tw/i, name: 'So-net', score: 6 }
+        ],
+        
+        BLACKLIST: [
+          { pattern: /\.cn$/i, score: -5, reason: '国内服务器' },
+          { pattern: /\.ru$/i, score: -8, reason: '俄罗斯服务器' },
+          { pattern: /\.ir$/i, score: -10, reason: '伊朗服务器' },
+          { pattern: /\.kp$/i, score: -20, reason: '朝鲜服务器' },
+          
+          { pattern: /localhost|127\.0\.0\.1/i, score: -100, reason: '本地地址' }
+        ]
       };
-      this._vetoReg = /Maintenance|Down|Fix|Expired|Error|Timeout|故障|维护|离线/i;
-      this._regionReg = /HK|MO|TW|SG|JP|US|KR|UK|DE|香港|澳门|台湾|新加坡|日本|美国|韩国|英国|德国|港|澳|台/i;
+      
+      this._weights = {
+        PROTOCOLS: {
+          'hysteria2': 15, 'tuic': 15,           // 现代高性能协议
+          'vless': 12, 'trojan': 10,             // 轻量级协议
+          'ss': 8, 'snell': 8,                   // 经典协议
+          'vmess': 5, 'ssr': 3,                  // 较重协议
+          'http': 2, 'socks5': 2                 // 基础协议
+        },
+        
+        // 正面关键词（+分）
+        POSITIVE_KEYWORDS: {
+          // 高级标识
+          'Premium': 5, 'Pro': 4, 'Plus': 3, 'VIP': 3, 'Elite': 4, 'Ultimate': 4,
+          // 优化标识
+          '游戏': 3, 'Game': 3, 'Gaming': 3, '流媒体': 2, 'Streaming': 2, 'Netflix': 2,
+          '解锁': 2, 'Unlock': 2, '实验性': 2, 'Experimental': 2, '优化': 2, 'Optimized': 2,
+          // 稳定性标识
+          '稳定': 2, 'Stable': 2, '推荐': 2, 'Recommended': 2,
+          // 线路类型
+          'IPLC': 12, 'IEPL': 12, 'BGP': 10, 'CN2 GIA': 10, 'CN2-GIA': 10, 'CN2': 8, 'GIA': 8,
+          '专线': 12, '内网': 12, '直连': 6, 'Direct': 6, '中转': 4, 'Relay': 4,
+          // ISP 标识
+          'HKT': 8, 'HKBN': 8, 'PCCW': 8, 'HGC': 8
+        },
+        
+        // 负面关键词（-分）
+        NEGATIVE_KEYWORDS: {
+          // 严重问题（直接排除）
+          '过期': -100, '到期': -100, 'Expire': -100, 'Expired': -100,
+          '维护': -50, 'Maintenance': -50, '故障': -50, 'Down': -50,
+          // 质量问题
+          '测试': -20, 'Test': -20, '备用': -10, 'Backup': -10,
+          '试用': -10, 'Trial': -10,
+          // 限制标识
+          '限速': -15, 'Limited': -10, '共享': -8, 'Shared': -8
+          
+          // ❌ 已移除：'免费': -15, 'Free': -15 - 支持免费节点用户
+          // 说明：免费节点虽然质量可能较低，但不应直接扣分，让其他维度（性能、稳定性）来评判
+        },
+        
+        // 地区评分（0-10分）
+        REGIONS: {
+          // 亚洲近距离（最优）
+          'HK': 10, 'MO': 10, 'TW': 9,
+          // 亚洲枢纽
+          'SG': 9, 'JP': 8, 'KR': 7,
+          // 北美
+          'US': 6, 'CA': 5,
+          // 欧洲
+          'UK': 4, 'DE': 4, 'FR': 4, 'NL': 4,
+          // 其他亚洲
+          'TH': 6, 'MY': 6, 'PH': 5, 'IN': 4,
+          // 大洋洲
+          'AU': 5,
+          // 其他
+          'RU': 2, 'BR': 2, 'AR': 2
+        },
+        
+        // 城市加分（0-2分）
+        CITIES: {
+          // 香港
+          '香港': 2, 'HK': 2, 'Hong Kong': 2,
+          // 台湾
+          '台北': 2, 'Taipei': 2,
+          // 日本
+          '东京': 2, 'Tokyo': 2, '大阪': 1, 'Osaka': 1,
+          // 新加坡
+          '新加坡': 2, 'Singapore': 2,
+          // 美国
+          '洛杉矶': 2, 'Los Angeles': 2, 'LA': 2,
+          '圣何塞': 2, 'San Jose': 2, '西雅图': 1, 'Seattle': 1, '纽约': 1, 'New York': 1
+        }
+      };
+      
+      this._vetoReg = /Maintenance|Down|Fix|Expired|Error|Timeout|故障|维护|离线|过期|到期/i;
+      this._regionReg = /HK|MO|TW|SG|JP|US|KR|UK|DE|FR|NL|TH|MY|PH|IN|AU|RU|BR|AR|CA|香港|澳门|台湾|新加坡|日本|美国|韩国|英国|德国|法国|荷兰|泰国|马来西亚|菲律宾|印度|澳大利亚|俄罗斯|巴西|阿根廷|加拿大|港|澳|台/i;
       this._latencyReg = /(\d+)ms/i;
-      this._kwRegs = new Map(Object.keys(this._weights.KEYWORDS).map(kw => [kw, new RegExp(kw, "i")]));
+      this._rateReg = /(\d+\.?\d*)x|(\d+\.?\d*)倍/i;
       
       this._SCORE_THRESHOLDS = {
-        EXCELLENT: 75,
-        GOOD: 65,
-        MIN: 0
+        EXCELLENT: 85,
+        GOOD: 70,
+        MIN: 55  // 最低评分标准：55 分
       };
     }
 
@@ -874,90 +957,327 @@ const Sirkey = (() => {
     }
 
     /**
-     * 节点综合评分逻辑 (基础 25, 满分 100+)
-     * 维度：协议(25%)、性能(20%)、稳定性(15%)、语义(15%)、动态(-20~+10)
+     * ========== 综合多维度节点质量评分体系 ==========
+     * 
+     * 评分架构（满分 100 分）：
+     * - 基础分：10 分
+     * - 协议维度：20 分（协议类型 0-15 + 特性加分 0-5）
+     * - 性能维度：20 分（倍率 0-12 + 延迟 0-8）
+     * - 稳定性维度：15 分（端口 0-3 + 线路类型 0-12）
+     * - 地理维度：15 分（地区 0-10 + 城市 0-5）
+     * - 服务器维度：10 分（提供商质量）
+     * - 语义维度：10 分（关键词识别）
+     * - 动态调整：-20 ~ +10 分（多样性、稳定性）
+     * 
+     * @param {Object} proxy - 代理节点对象
+     * @param {Object} context - 节点池上下文（用于多样性评分）
+     * @returns {Object} { score: 总分, breakdown: 各维度得分明细 }
      */
-    score(proxy) {
-      if (!proxy) return 0;
-      let staticScore = 25;
+    scoreComprehensive(proxy, context = {}) {
+      if (!proxy) return { score: 0, breakdown: {} };
+      
       const name = typeof proxy === 'string' ? proxy : String(proxy.name || "");
       const type = String(proxy.type || "").toLowerCase();
       const port = parseInt(proxy.port || 0);
-
+      const server = proxy.server || "";
+      
+      // 否决机制：严重问题直接返回 0 分
       if (this._vetoReg.test(name)) {
         Logger.debug("AIEngine.Veto", `否决节点: ${name}`);
-        return 0;
+        return { score: 0, breakdown: { veto: true, reason: "严重问题关键词" } };
       }
-
-      const protocolWeights = { 
-        "hysteria2": 25, "tuic": 25, "vless": 22, 
-        "trojan": 18, "ss": 15, "snell": 12, 
-        "vmess": 8, "ssr": 5 
+      
+      const breakdown = {
+        base: 10,           // 基础分
+        protocol: 0,        // 协议维度
+        performance: 0,     // 性能维度
+        stability: 0,       // 稳定性维度
+        geography: 0,       // 地理维度
+        server: 0,          // 服务器维度
+        semantic: 0,        // 语义维度
+        dynamic: 0          // 动态调整
       };
-      staticScore += (protocolWeights[type] || 0);
-
-      if (proxy.rate != null) {
-        const rate = parseFloat(proxy.rate);
-        if (rate <= 0.1) staticScore += 15;
-        else if (rate <= 0.5) staticScore += 10;
-        else if (rate <= 1.0) staticScore += 5;
-        else if (rate > 1.0) staticScore -= 20;
-      } else if (name.includes("0.1x")) staticScore += 15;
-      else if (name.includes("1.0x")) staticScore += 5;
-
-      if (CONSTANTS.SAFE_PORTS.has(port)) staticScore += 4;
-      if (proxy.udp) staticScore += 2;
-      if (proxy.tls) staticScore += 2;
       
-      const stats = this._stats ? this._stats.getStats(proxy) : null;
-      if (stats && stats.successCount > 10) staticScore += 2; 
-
-      let semanticScore = 0;
-      for (const [kw, reg] of this._kwRegs) {
-        if (reg.test(name)) {
-          const w = this._weights.KEYWORDS[kw];
-          if (w <= -80) return 0;
-          semanticScore += w;
-        }
+      // ========== 1. 协议维度（20分）==========
+      // 1.1 协议类型评分（0-15分）
+      breakdown.protocol = this._weights.PROTOCOLS[type] || 0;
+      
+      // 1.2 协议特性加分（0-5分）
+      if (proxy.tls) breakdown.protocol += 2;        // TLS 加密
+      if (proxy.udp) breakdown.protocol += 2;        // UDP 支持
+      if (proxy.sni) breakdown.protocol += 1;        // SNI 配置
+      if (proxy['skip-cert-verify'] === false) breakdown.protocol += 1;  // 证书验证
+      if (proxy.network === 'ws' || proxy.network === 'websocket') breakdown.protocol += 1;  // WebSocket
+      
+      breakdown.protocol = Math.min(20, breakdown.protocol);
+      
+      // ========== 2. 性能维度（20分）==========
+      // 2.1 倍率评分（0-12分，可为负）
+      let rateScore = 0;
+      let rate = proxy.rate;
+      if (!rate) {
+        const match = name.match(this._rateReg);
+        if (match) rate = parseFloat(match[1] || match[2]);
       }
       
-      const regMatch = name.match(this._regionReg);
-      if (regMatch) {
-        const r = regMatch[0].toUpperCase();
-        const regionMap = {
-          "香港": "HK_MO_TW", "HK": "HK_MO_TW", "港": "HK_MO_TW",
-          "澳门": "HK_MO_TW", "MO": "HK_MO_TW", "澳": "HK_MO_TW",
-          "台湾": "HK_MO_TW", "TW": "HK_MO_TW", "台": "HK_MO_TW",
-          "新加坡": "SG", "SG": "SG",
-          "日本": "JP", "JP": "JP",
-          "美国": "US", "US": "US",
-          "韩国": "KR", "KR": "KR",
-          "英国": "UK", "UK": "UK",
-          "德国": "DE", "DE": "DE"
-        };
-        const rCode = regionMap[r] || r;
-        semanticScore += (this._weights.REGIONS[rCode] || 0);
+      if (rate != null) {
+        if (rate <= 0.1) rateScore = 12;          // 0.1x 极低倍率
+        else if (rate <= 0.2) rateScore = 10;     // 0.2x 很低倍率
+        else if (rate <= 0.5) rateScore = 8;      // 0.5x 低倍率
+        else if (rate <= 0.8) rateScore = 6;      // 0.8x 较低倍率
+        else if (rate <= 1.0) rateScore = 4;      // 1.0x 标准倍率
+        else if (rate <= 1.5) rateScore = -5;     // 1.5x 轻度超售
+        else if (rate <= 2.0) rateScore = -10;    // 2.0x 中度超售
+        else rateScore = -20;                      // >2.0x 严重超售
       }
       
+      // 2.2 延迟评分（0-8分，可为负）
+      let latencyScore = 0;
       const latencyMatch = name.match(this._latencyReg);
       if (latencyMatch) {
         const ms = parseInt(latencyMatch[1]);
-        if (ms > 800) staticScore -= 45;
-        else if (ms > 400) staticScore -= 25;
-        else if (ms < 150) staticScore += 10;
+        if (ms < 30) latencyScore = 8;            // <30ms 极低延迟
+        else if (ms < 50) latencyScore = 6;       // <50ms 很低延迟
+        else if (ms < 100) latencyScore = 4;      // <100ms 低延迟
+        else if (ms < 150) latencyScore = 2;      // <150ms 可接受
+        else if (ms < 200) latencyScore = 0;      // <200ms 一般
+        else if (ms < 300) latencyScore = -5;     // <300ms 较高
+        else if (ms < 500) latencyScore = -10;    // <500ms 高延迟
+        else latencyScore = -20;                   // >=500ms 极高延迟
       }
-
-      staticScore += Math.min(30, semanticScore);
-      const baseScore = Utils.clamp(staticScore, 0, 80);
-
-      const dynamicOffset = this._stats ? this._stats.getDynamicOffset(proxy) : 0;
-
-      return Math.max(0, baseScore + dynamicOffset);
+      
+      breakdown.performance = Math.max(-20, Math.min(20, rateScore + latencyScore));
+      
+      // ========== 3. 稳定性维度（15分）==========
+      // 3.1 端口评分（0-3分）
+      if (CONSTANTS.SAFE_PORTS.has(port)) {
+        breakdown.stability = 3;
+      } else if ([443, 80].includes(port)) {
+        breakdown.stability = 2;
+      }
+      
+      // 3.2 线路类型评分（0-12分）
+      let lineScore = 0;
+      if (/IPLC|IEPL|专线|内网/i.test(name)) {
+        lineScore = 12;
+      } else if (/BGP|CN2 GIA|CN2-GIA/i.test(name)) {
+        lineScore = 10;
+      } else if (/CN2|GIA/i.test(name)) {
+        lineScore = 8;
+      } else if (/直连|Direct/i.test(name)) {
+        lineScore = 6;
+      } else if (/中转|Relay/i.test(name)) {
+        lineScore = 4;
+      }
+      
+      breakdown.stability += lineScore;
+      breakdown.stability = Math.min(15, breakdown.stability);
+      
+      // ========== 4. 地理维度（15分）==========
+      // 4.1 地区评分（0-10分）
+      const regionMap = {
+        '香港': 'HK', 'HK': 'HK', '港': 'HK', 'Hong Kong': 'HK', 'Hongkong': 'HK',
+        '澳门': 'MO', 'MO': 'MO', '澳': 'MO', 'Macao': 'MO', 'Macau': 'MO',
+        '台湾': 'TW', 'TW': 'TW', '台': 'TW', 'Taiwan': 'TW',
+        '新加坡': 'SG', 'SG': 'SG', '狮城': 'SG', 'Singapore': 'SG',
+        '日本': 'JP', 'JP': 'JP', 'Japan': 'JP',
+        '韩国': 'KR', 'KR': 'KR', 'Korea': 'KR',
+        '美国': 'US', 'US': 'US', '美': 'US', 'United States': 'US', 'America': 'US',
+        '加拿大': 'CA', 'CA': 'CA', 'Canada': 'CA',
+        '英国': 'UK', 'UK': 'UK', 'United Kingdom': 'UK', 'Britain': 'UK',
+        '德国': 'DE', 'DE': 'DE', 'Germany': 'DE',
+        '法国': 'FR', 'FR': 'FR', 'France': 'FR',
+        '荷兰': 'NL', 'NL': 'NL', 'Netherlands': 'NL', 'Holland': 'NL',
+        '泰国': 'TH', 'TH': 'TH', 'Thailand': 'TH',
+        '马来西亚': 'MY', 'MY': 'MY', 'Malaysia': 'MY',
+        '菲律宾': 'PH', 'PH': 'PH', 'Philippines': 'PH',
+        '印度': 'IN', 'IN': 'IN', 'India': 'IN',
+        '澳大利亚': 'AU', 'AU': 'AU', 'Australia': 'AU',
+        '俄罗斯': 'RU', 'RU': 'RU', 'Russia': 'RU',
+        '巴西': 'BR', 'BR': 'BR', 'Brazil': 'BR',
+        '阿根廷': 'AR', 'AR': 'AR', 'Argentina': 'AR'
+      };
+      
+      for (const [key, code] of Object.entries(regionMap)) {
+        if (name.includes(key)) {
+          breakdown.geography = this._weights.REGIONS[code] || 0;
+          break;
+        }
+      }
+      
+      // 4.2 城市加分（0-5分）
+      for (const [city, bonus] of Object.entries(this._weights.CITIES)) {
+        if (name.includes(city)) {
+          breakdown.geography += bonus;
+          break;
+        }
+      }
+      
+      breakdown.geography = Math.min(15, breakdown.geography);
+      
+      // ========== 5. 服务器维度（10分）==========
+      breakdown.server = this._getServerScore(server);
+      
+      // ========== 6. 语义维度（10分）==========
+      let semanticScore = 0;
+      
+      // 6.1 正面关键词
+      for (const [keyword, points] of Object.entries(this._weights.POSITIVE_KEYWORDS)) {
+        if (new RegExp(keyword, 'i').test(name)) {
+          semanticScore += points;
+        }
+      }
+      
+      // 6.2 负面关键词
+      for (const [keyword, points] of Object.entries(this._weights.NEGATIVE_KEYWORDS)) {
+        if (new RegExp(keyword, 'i').test(name)) {
+          semanticScore += points;  // 已经是负数
+          // 严重问题直接返回 0 分
+          if (points <= -50) {
+            return { score: 0, breakdown: { veto: true, reason: `负面关键词: ${keyword}` } };
+          }
+        }
+      }
+      
+      breakdown.semantic = Math.max(-100, Math.min(10, semanticScore));
+      
+      // ========== 7. 动态调整（-20 ~ +10分）==========
+      breakdown.dynamic = this._getDynamicAdjustment(proxy, name, server, type, context);
+      
+      // ========== 8. 计算总分 ==========
+      const totalScore = Object.values(breakdown).reduce((sum, score) => sum + score, 0);
+      
+      return {
+        score: Math.max(0, totalScore),
+        breakdown: breakdown
+      };
     }
 
     /**
-     * 全量节点评判打分系统
-     * 策略：75分优质标准 → 65分兜底标准 → 随机抽取
+     * 服务器质量评分（-100 ~ +10分）
+     */
+    _getServerScore(server) {
+      if (!server) return -2;  // 无服务器信息
+      
+      // 检查 S 级提供商
+      for (const provider of this._SERVER_WHITELIST.TIER_S) {
+        if (provider.pattern.test(server)) {
+          return provider.score;
+        }
+      }
+      
+      // 检查 A 级提供商
+      for (const provider of this._SERVER_WHITELIST.TIER_A) {
+        if (provider.pattern.test(server)) {
+          return provider.score;
+        }
+      }
+      
+      // 检查 B 级提供商
+      for (const provider of this._SERVER_WHITELIST.TIER_B) {
+        if (provider.pattern.test(server)) {
+          return provider.score;
+        }
+      }
+      
+      // 检查黑名单
+      for (const entry of this._SERVER_WHITELIST.BLACKLIST) {
+        if (entry.pattern.test(server)) {
+          return entry.score;
+        }
+      }
+      
+      // 纯 IP 地址（轻微扣分）
+      if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(server)) {
+        return -2;
+      }
+      
+      return 0;  // 未知提供商
+    }
+
+    /**
+     * 动态调整评分（-20 ~ +10分）
+     * 基于节点池上下文的多样性和稳定性调整
+     */
+    _getDynamicAdjustment(proxy, name, server, type, context) {
+      let adjustment = 0;
+      
+      // 1. 历史统计加分/扣分
+      const stats = this._stats ? this._stats.getStats(proxy) : null;
+      if (stats) {
+        const now = Date.now();
+        
+        // 1.1 忠诚度奖励
+        if (now - stats.lastSeen < CONSTANTS.TIME.DAY) adjustment += 2;
+        if (stats.successCount > 5) adjustment += 3;
+        
+        // 1.2 失败惩罚
+        if (stats.failCount > 0) {
+          adjustment -= Math.min(20, stats.failCount * 10);
+        }
+      }
+      
+      // 2. 多样性惩罚（如果提供了上下文）
+      if (context.serverCounts && server) {
+        const count = context.serverCounts.get(server) || 0;
+        if (count > 10) adjustment -= 15;      // 严重集中
+        else if (count > 5) adjustment -= 10;  // 过度集中
+        else if (count > 3) adjustment -= 5;   // 轻度集中
+      }
+      
+      // 3. 稀缺性加分
+      if (context.regionCounts && context.totalNodes) {
+        // 提取地区代码
+        let regionCode = null;
+        for (const [key, code] of Object.entries({
+          '香港': 'HK', 'HK': 'HK', '港': 'HK',
+          '澳门': 'MO', 'MO': 'MO', '澳': 'MO',
+          '台湾': 'TW', 'TW': 'TW', '台': 'TW',
+          '新加坡': 'SG', 'SG': 'SG',
+          '日本': 'JP', 'JP': 'JP',
+          '美国': 'US', 'US': 'US'
+        })) {
+          if (name.includes(key)) {
+            regionCode = code;
+            break;
+          }
+        }
+        
+        if (regionCode) {
+          const count = context.regionCounts.get(regionCode) || 0;
+          const ratio = count / context.totalNodes;
+          if (ratio < 0.05) adjustment += 5;   // <5% 稀缺
+          else if (ratio < 0.10) adjustment += 3;  // <10% 较少
+        }
+      }
+      
+      // 4. 协议多样性加分
+      if (context.protocolCounts && context.totalNodes) {
+        const count = context.protocolCounts.get(type) || 0;
+        const ratio = count / context.totalNodes;
+        
+        // 现代协议且占比低，给予加分
+        if (['hysteria2', 'tuic'].includes(type) && ratio < 0.2) {
+          adjustment += 5;
+        }
+      }
+      
+      return Math.max(-20, Math.min(10, adjustment));
+    }
+
+    /**
+     * 节点综合评分逻辑 (保留原有方法作为备份)
+     * 维度：协议(25%)、性能(20%)、稳定性(15%)、语义(15%)、动态(-20~+10)
+     */
+    score(proxy) {
+      // 使用新的综合评分方法
+      const result = this.scoreComprehensive(proxy);
+      return result.score;
+    }
+
+    /**
+     * 全量节点评判打分系统（用于地理组）
+     * 策略：85分优质标准 → 70分良好标准 → 55分可接受标准
      * 输出：75%AI推送 + 25%随机抽取
      */
     getBestNodes(proxies) {
@@ -970,15 +1290,30 @@ const Sirkey = (() => {
         
         Logger.info("AIEngine", `优选筛选: 总数 ${total}, 目标 ${targetCount}`);
 
+        // 构建节点池上下文
+        const context = {
+          totalNodes: proxies.length,
+          serverCounts: new Map(),
+          regionCounts: new Map(),
+          protocolCounts: new Map()
+        };
+        
+        proxies.forEach(p => {
+          const server = p.server || "";
+          const type = String(p.type || "").toLowerCase();
+          if (server) context.serverCounts.set(server, (context.serverCounts.get(server) || 0) + 1);
+          context.protocolCounts.set(type, (context.protocolCounts.get(type) || 0) + 1);
+        });
+
         const candidates = proxies.map(p => {
-          const score = this.score(p);
+          const result = this.scoreComprehensive(p, context);
           const name = typeof p === 'string' ? p : String(p.name || "");
           const isCore = /HK|MO|TW|SG|JP|US|香港|澳门|台湾|新加坡|日本|美国|港|澳|台/i.test(name);
           const stats = this._stats ? this._stats.getStats(p) : { failCount: 0 };
           
           return {
             id: name,
-            score: score,
+            score: result.score,
             proxy: p,
             server: p.server || "",
             isCore: isCore,
@@ -986,12 +1321,12 @@ const Sirkey = (() => {
           };
         }).filter(item => {
           if (item.failCount > 0) return false;
-          return item.score >= this._SCORE_THRESHOLDS.MIN;
+          return item.score >= 0;  // 地理组使用更宽松的标准
         }).sort((a, b) => b.score - a.score);
 
         const excellentNodes = candidates.filter(item => item.score >= this._SCORE_THRESHOLDS.EXCELLENT);
         const goodNodes = candidates.filter(item => item.score >= this._SCORE_THRESHOLDS.GOOD && item.score < this._SCORE_THRESHOLDS.EXCELLENT);
-        const fallbackNodes = candidates.filter(item => item.score >= this._SCORE_THRESHOLDS.MIN && item.score < this._SCORE_THRESHOLDS.GOOD);
+        const fallbackNodes = candidates.filter(item => item.score >= 0 && item.score < this._SCORE_THRESHOLDS.GOOD);
 
         let selectedNodes = [];
 
@@ -999,7 +1334,7 @@ const Sirkey = (() => {
           Logger.info("AIEngine", `优质节点充足: ${excellentNodes.length}个`);
           selectedNodes = excellentNodes.slice(0, targetCount);
         } else if (goodNodes.length > 0) {
-          Logger.info("AIEngine", `降级到65分标准: 优质${excellentNodes.length}个, 良好${goodNodes.length}个`);
+          Logger.info("AIEngine", `降级到70分标准: 优质${excellentNodes.length}个, 良好${goodNodes.length}个`);
           selectedNodes = [...excellentNodes, ...goodNodes].slice(0, targetCount);
         } else if (fallbackNodes.length > 0) {
           Logger.warn("AIEngine", `降级到兜底标准: 使用${fallbackNodes.length}个可用节点`);
@@ -1034,12 +1369,12 @@ const Sirkey = (() => {
     }
 
     /**
-     * 🔧 新增：AI 优选组专用筛选逻辑
+     * 🔧 AI 优选组专用筛选逻辑（使用综合评分体系）
      * 准入规则：
      * 1. 目标数量：100 个节点
-     * 2. 评分标准：优先 75 分以上，不足则降级到 65 分，最低 40 分
+     * 2. 评分标准：优先 85 分以上，不足则降级到 70 分，最低 55 分
      * 3. 容纳上限：最多 100 个节点
-     * 4. 退出机制：连续评分低于 40 分的节点自动清退
+     * 4. 退出机制：评分低于 55 分或存在故障的节点自动清退
      * 
      * @param {Array} proxies - 所有代理节点
      * @returns {Array} 筛选后的节点名称列表
@@ -1053,19 +1388,66 @@ const Sirkey = (() => {
       try {
         const TARGET_COUNT = 100;  // 目标数量：100 个
         const MAX_COUNT = 100;     // 容纳上限：100 个
-        const MIN_SCORE = 40;      // 最低评分标准：40 分（劣质节点阈值）
+        const MIN_SCORE = 55;      // 最低评分标准：55 分（劣质节点阈值）
         
         Logger.info("AIEngine.Premium", `开始筛选 AI 优选组: 总节点数 ${proxies.length}, 目标 ${TARGET_COUNT} 个`);
 
-        // 1. 评分并过滤劣质节点
+        // ========== 1. 构建节点池上下文（用于多样性评分）==========
+        const context = {
+          totalNodes: proxies.length,
+          serverCounts: new Map(),
+          regionCounts: new Map(),
+          protocolCounts: new Map()
+        };
+        
+        // 统计服务器、地区、协议分布
+        proxies.forEach(p => {
+          const server = p.server || "";
+          const type = String(p.type || "").toLowerCase();
+          const name = String(p.name || "");
+          
+          // 服务器统计
+          if (server) {
+            context.serverCounts.set(server, (context.serverCounts.get(server) || 0) + 1);
+          }
+          
+          // 协议统计
+          context.protocolCounts.set(type, (context.protocolCounts.get(type) || 0) + 1);
+          
+          // 地区统计
+          const regionMap = {
+            '香港': 'HK', 'HK': 'HK', '港': 'HK',
+            '澳门': 'MO', 'MO': 'MO', '澳': 'MO',
+            '台湾': 'TW', 'TW': 'TW', '台': 'TW',
+            '新加坡': 'SG', 'SG': 'SG',
+            '日本': 'JP', 'JP': 'JP',
+            '美国': 'US', 'US': 'US'
+          };
+          
+          for (const [key, code] of Object.entries(regionMap)) {
+            if (name.includes(key)) {
+              context.regionCounts.set(code, (context.regionCounts.get(code) || 0) + 1);
+              break;
+            }
+          }
+        });
+        
+        // 输出节点池分析
+        Logger.info("AIEngine.Premium", `节点池分析:`);
+        Logger.info("AIEngine.Premium", `  - 协议分布: ${Array.from(context.protocolCounts.entries()).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+        Logger.info("AIEngine.Premium", `  - 地区分布: ${Array.from(context.regionCounts.entries()).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+        Logger.info("AIEngine.Premium", `  - 服务器数量: ${context.serverCounts.size} 个不同服务器`);
+
+        // ========== 2. 使用综合评分方法评分并过滤劣质节点 ==========
         const candidates = proxies.map(p => {
-          const score = this.score(p);
+          const result = this.scoreComprehensive(p, context);
           const name = typeof p === 'string' ? p : String(p.name || "");
           const stats = this._stats ? this._stats.getStats(p) : { failCount: 0, successCount: 0 };
           
           return {
             id: name,
-            score: score,
+            score: result.score,
+            breakdown: result.breakdown,
             proxy: p,
             server: p.server || "",
             failCount: stats.failCount,
@@ -1078,7 +1460,7 @@ const Sirkey = (() => {
             return false;
           }
           
-          // 最低评分标准：低于 40 分的劣质节点直接排除
+          // 最低评分标准：低于 55 分的劣质节点直接排除
           if (item.score < MIN_SCORE) {
             Logger.debug("AIEngine.Premium", `节点 ${item.id} 因评分过低被排除 (评分: ${item.score})`);
             return false;
@@ -1088,24 +1470,40 @@ const Sirkey = (() => {
         }).sort((a, b) => b.score - a.score);  // 按评分降序排列
 
         if (candidates.length === 0) {
-          Logger.error("AIEngine.Premium", "所有节点均不符合最低标准 (评分 < 40 或存在故障)");
+          Logger.error("AIEngine.Premium", "所有节点均不符合最低标准 (评分 < 55 或存在故障)");
+          Logger.warn("AIEngine.Premium", "兜底策略：尝试使用所有可用节点（忽略评分限制）");
+          
+          const emergencyNodes = proxies
+            .map(p => {
+              const result = this.scoreComprehensive(p, context);
+              return { id: p.name || p, score: result.score, proxy: p };
+            })
+            .filter(item => item.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 20);
+          
+          if (emergencyNodes.length > 0) {
+            Logger.warn("AIEngine.Premium", `兜底成功：返回 ${emergencyNodes.length} 个评分 > 0 的节点`);
+            return emergencyNodes.map(n => n.id);
+          }
+          
           return ["DIRECT"];
         }
 
-        // 2. 分层筛选：75 分 -> 65 分 -> 40 分
-        const excellentNodes = candidates.filter(item => item.score >= this._SCORE_THRESHOLDS.EXCELLENT);  // 75+
-        const goodNodes = candidates.filter(item => item.score >= this._SCORE_THRESHOLDS.GOOD && item.score < this._SCORE_THRESHOLDS.EXCELLENT);  // 65-74
-        const acceptableNodes = candidates.filter(item => item.score >= MIN_SCORE && item.score < this._SCORE_THRESHOLDS.GOOD);  // 40-64
+        // ========== 3. 分层筛选：85 分 -> 70 分 -> 55 分 ==========
+        const excellentNodes = candidates.filter(item => item.score >= this._SCORE_THRESHOLDS.EXCELLENT);  // 85+
+        const goodNodes = candidates.filter(item => item.score >= this._SCORE_THRESHOLDS.GOOD && item.score < this._SCORE_THRESHOLDS.EXCELLENT);  // 70-84
+        const acceptableNodes = candidates.filter(item => item.score >= MIN_SCORE && item.score < this._SCORE_THRESHOLDS.GOOD);  // 55-69
 
-        Logger.info("AIEngine.Premium", `节点分层: 优质(75+)=${excellentNodes.length}, 良好(65-74)=${goodNodes.length}, 可接受(40-64)=${acceptableNodes.length}`);
+        Logger.info("AIEngine.Premium", `节点分层: 优质(85+)=${excellentNodes.length}, 良好(70-84)=${goodNodes.length}, 可接受(55-69)=${acceptableNodes.length}`);
 
         let selectedNodes = [];
 
-        // 3. 准入逻辑：优先高分节点，不足则降级
+        // ========== 4. 准入逻辑：优先高分节点，不足则降级 ==========
         if (excellentNodes.length >= TARGET_COUNT) {
           // 情况 1: 优质节点充足，直接取前 100 个
           selectedNodes = excellentNodes.slice(0, TARGET_COUNT);
-          Logger.info("AIEngine.Premium", `✅ 优质节点充足，选取前 ${TARGET_COUNT} 个 (评分 75+)`);
+          Logger.info("AIEngine.Premium", `✅ 优质节点充足，选取前 ${TARGET_COUNT} 个 (评分 85+)`);
           
         } else if (excellentNodes.length + goodNodes.length >= TARGET_COUNT) {
           // 情况 2: 优质+良好节点达标，混合选取
@@ -1123,22 +1521,53 @@ const Sirkey = (() => {
           Logger.warn("AIEngine.Premium", `⚠️ 可用节点不足 ${TARGET_COUNT} 个，选取全部 ${selectedNodes.length} 个节点`);
         }
 
-        // 4. 容纳上限：确保不超过 100 个
+        // ========== 5. 容纳上限：确保不超过 100 个 ==========
         if (selectedNodes.length > MAX_COUNT) {
           selectedNodes = selectedNodes.slice(0, MAX_COUNT);
           Logger.warn("AIEngine.Premium", `⚠️ 节点数超过上限，截取前 ${MAX_COUNT} 个`);
         }
 
-        // 5. 多样性过滤：确保节点来自不同服务器和集群
+        // ========== 6. 多样性过滤：确保节点来自不同服务器和集群 ==========
         const diversityFiltered = this._applyDiversityFilter(selectedNodes, Math.min(selectedNodes.length, MAX_COUNT));
 
-        // 6. 统计信息
+        // ========== 7. 输出详细评分明细（前 10 个节点）==========
+        Logger.info("AIEngine.Premium", `📊 前 10 个节点评分明细:`);
+        diversityFiltered.slice(0, 10).forEach((item, idx) => {
+          const b = item.breakdown;
+          Logger.info("AIEngine.Premium", 
+            `  ${idx + 1}. ${item.id} (总分: ${item.score.toFixed(1)}) - ` +
+            `基础:${b.base} 协议:${b.protocol} 性能:${b.performance} 稳定:${b.stability} ` +
+            `地理:${b.geography} 服务器:${b.server} 语义:${b.semantic} 动态:${b.dynamic}`
+          );
+        });
+
+        // ========== 8. 统计信息 ==========
         const avgScore = diversityFiltered.reduce((sum, item) => sum + item.score, 0) / diversityFiltered.length;
         const minScore = Math.min(...diversityFiltered.map(item => item.score));
         const maxScore = Math.max(...diversityFiltered.map(item => item.score));
         
+        // 统计各维度平均分
+        const avgBreakdown = {
+          base: 0, protocol: 0, performance: 0, stability: 0,
+          geography: 0, server: 0, semantic: 0, dynamic: 0
+        };
+        diversityFiltered.forEach(item => {
+          for (const key in avgBreakdown) {
+            avgBreakdown[key] += item.breakdown[key] || 0;
+          }
+        });
+        for (const key in avgBreakdown) {
+          avgBreakdown[key] /= diversityFiltered.length;
+        }
+        
         Logger.info("AIEngine.Premium", `✅ AI 优选组筛选完成: ${diversityFiltered.length} 个节点`);
         Logger.info("AIEngine.Premium", `📊 评分统计: 平均 ${avgScore.toFixed(1)}, 最高 ${maxScore.toFixed(1)}, 最低 ${minScore.toFixed(1)}`);
+        Logger.info("AIEngine.Premium", 
+          `📊 各维度平均分: 基础:${avgBreakdown.base.toFixed(1)} 协议:${avgBreakdown.protocol.toFixed(1)} ` +
+          `性能:${avgBreakdown.performance.toFixed(1)} 稳定:${avgBreakdown.stability.toFixed(1)} ` +
+          `地理:${avgBreakdown.geography.toFixed(1)} 服务器:${avgBreakdown.server.toFixed(1)} ` +
+          `语义:${avgBreakdown.semantic.toFixed(1)} 动态:${avgBreakdown.dynamic.toFixed(1)}`
+        );
 
         return diversityFiltered.map(s => s.id);
         
@@ -1541,7 +1970,7 @@ const Sirkey = (() => {
       const activeRegions = hasProviders ? (Config.regionOptions?.regions || []) : regions;
       const maxRegions = Config.regionOptions?.maxRegions || 10;
 
-      // 1. 生成区域分组（select 类型）- 限制最多 maxRegions 个
+      // 1. 生成区域分组（select + fallback 混合模式）
       let regionCount = 0;
       for(const r of activeRegions){
         if(regionCount >= maxRegions) {
@@ -1564,88 +1993,112 @@ const Sirkey = (() => {
           }
         }
         usedFilters.push(pattern);
-        // 地理组只包含该地理区域的节点，不添加全局组（避免逻辑污染）
+        
         const base=Utils.getProxyGroupBase();
+        const regionNodeNames = regionProxies.map(p => p.name || p);
+        
+        // 1. 地理组（select）- 用户手动选择，引用全局故障转移组
         regionGroups.push({
           ...base,
-          name:r.name,
-          type:"select",
-          "include-all":true,
-          filter:pattern,
-          icon:ICON_VAL(r.icon)
+          name: r.name,
+          type: "select",
+          proxies: ["故障转移", ...regionNodeNames],  // 引用全局故障转移组
+          "include-all": false,
+          icon: ICON_VAL(r.icon)
         });
+        
         regionCount++;
       }
 
       const excludeFilter = usedFilters.length ? usedFilters.map(f=>`(${f})`).join("|") : "";
       
-      // 2. AI优选组 (AI 精选)
+      // 2. 智能优选组 (select + fallback 混合模式)
       const base=Utils.getProxyGroupBase();
       let bestIds = [];
       if(Config.aiOptions?.enable && list.length){
-        // 🔧 使用专门的 AI 优选组筛选逻辑
         bestIds = this._ai.getBestNodesForPremiumGroup(list);
       }
 
+      // 2. 智能优选（select）
       const bestNodesGroup = {
         ...base,
-        name: "AI优选",
+        name: "智能优选",
         type: "select",
-        proxies: bestIds.length ? bestIds : ["DIRECT"],
+        proxies: bestIds.length ? ["故障转移", ...bestIds] : ["DIRECT"],
         "include-all": false,
-        tolerance: 50,
         icon: ICON_VAL(ICONS.Premium)
       };
 
-      // 3. 手动选择组 - 用户完全控制的选择组
-      // 包含：DIRECT（默认）+ 策略组（自动选择、AI优选）+ 所有节点
-      // 关键：第一项是 DIRECT，避免被"夺权"；同时提供策略组选项，提高灵活性
+      // 3. 手动选择组（select，不添加故障转移）
       const allNodeNames = list.map(p => p.name || p);
       const manualSelectionGroup = {
         ...base,
         name: "手动选择",
         type: "select",
         proxies: [
-          "DIRECT",       // 第1项：默认选中，不会被夺权
-          "自动选择",     // 第2项：用户可选，使用 url-test 自动测速
-          "AI优选",       // 第3项：用户可选，使用 AI 智能筛选
-          ...allNodeNames // 第4项起：所有具体节点
+          "DIRECT",
+          "自动选择",
+          "智能优选",
+          ...allNodeNames
         ],
-        "include-all": false,  // 使用显式节点列表
+        "include-all": false,
         icon: ICON_VAL(ICONS.Premium)
       };
 
+      // 4. 自动选择组（url-test，不添加故障转移）
       const autoSelectionGroup = {
         ...base,
         name: "自动选择",
-        type: "url-test",  // 只有自动选择是 url-test
+        type: "url-test",
         "include-all": true,
-        tolerance: 50,  // 🔧 修复：降低容差到50ms，更快响应延迟变化
-        "max-failed-times": 3,  // 🔧 关键修复：连续失败3次后自动切换
-        "expected-status": "204",  // 明确期望 HTTP 204 状态码
-        lazy: false,  // 主动测速，保持实时数据
-        interval: 300,  // 测速间隔（秒）
-        timeout: 5000,  // 单次测速超时（毫秒）
+        tolerance: 50,
+        "max-failed-times": 3,
+        "expected-status": "204",
+        lazy: false,
+        interval: 300,
+        timeout: 5000,
+        icon: ICON_VAL(ICONS.Proxy)
+      };
+      
+      // 5. 故障转移组（fallback）- 全局故障转移，排在倒数第三
+      const failoverGroup = {
+        ...base,
+        name: "故障转移",
+        type: "fallback",
+        proxies: bestIds.length ? bestIds : ["DIRECT"],
+        "include-all": false,
+        "max-failed-times": 3,
+        "expected-status": "204",
+        interval: 300,
+        timeout: 5000,
         icon: ICON_VAL(ICONS.Proxy)
       };
       
       // 🔧 新增：记录故障检测配置
       Logger.info("FailureDetection", `自动选择组配置: max-failed-times=${autoSelectionGroup["max-failed-times"]}, tolerance=${autoSelectionGroup.tolerance}ms, interval=${autoSelectionGroup.interval}s, timeout=${autoSelectionGroup.timeout}ms`);
+      Logger.info("FailureDetection", `故障转移组配置: type=fallback, max-failed-times=3, interval=300s, timeout=5000ms`);
 
-      // 其他节点组：包含未匹配的节点 + 提供代理选择（用于 MATCH 兜底）
-      // 关键：第一项是"手动选择"，确保 MATCH 规则默认不会被"夺权"
+      // 6. 其他节点组
       const otherGroup={
         ...base,
         name:"其他节点",
         type:"select",
-        proxies:["手动选择", "自动选择", "AI优选", "DIRECT"],  // 第一项改为"手动选择"
+        proxies:["故障转移", "手动选择", "自动选择", "智能优选", "DIRECT"],
         "include-all":true,
         "exclude-filter":excludeFilter,
         icon:ICON_VAL(ICONS.WorldMap)
       };
 
-      const regionProxyGroups = [bestNodesGroup, manualSelectionGroup, autoSelectionGroup];
-      regionProxyGroups.push(...regionGroups, otherGroup);
+      // 7. 组装最终顺序：核心组 → 地理组 → 故障转移 → 其他节点 → 国内网站
+      const regionProxyGroups = [
+        bestNodesGroup,           // 智能优选
+        manualSelectionGroup,     // 手动选择
+        autoSelectionGroup,       // 自动选择
+        ...regionGroups           // 地理组（包含故障转移子组）
+      ];
+      
+      // 在倒数第三位置插入全局故障转移组（倒数：其他节点、国内网站、故障转移）
+      regionProxyGroups.push(failoverGroup, otherGroup);
       
       return {regionProxyGroups,otherProxyNames:[]};
     }
@@ -2034,8 +2487,8 @@ const Sirkey = (() => {
       const groups=[];
       const services=Array.isArray(Config.services)?Config.services:[];
       
-      // 默认优先级顺序：手动选择 > 自动选择 > AI优选
-      const defaultOrder = ["手动选择", "自动选择", "AI优选", "DIRECT"];
+      // 默认优先级顺序：手动选择 > 自动选择 > 智能优选
+      const defaultOrder = ["手动选择", "自动选择", "智能优选", "DIRECT"];
       const allProxies = cfg.proxies || [];
 
       // 获取功能组管理器
@@ -2044,7 +2497,7 @@ const Sirkey = (() => {
       // ========== 不再为每个服务创建独立分组 ==========
       // 所有服务规则将通过功能组来路由
       
-      // ========== 1. 创建 10 个功能组(智能筛选节点) ==========
+      // ========== 1. 创建 10 个功能组(智能筛选节点 + 故障转移) ==========
       const functionalGroups = Array.isArray(Config.functionalGroups) ? Config.functionalGroups : [];
       functionalGroups.forEach(fg => {
         try {
@@ -2056,11 +2509,12 @@ const Sirkey = (() => {
             selectedNodes = functionalMgr.selectNodesForGroup(fg.id, allProxies);
           }
           
-          // 构建代理列表: 手动选择 + 自动选择 + AI优选 + 其他优先选项 + 筛选的节点 + 地理分组
+          // 1.1 创建功能组（select）- 引用全局故障转移组
           const customOrder = Array.isArray(fg.proxiesOrder) ? fg.proxiesOrder : [];
-          // 确保正确的优先级顺序：手动选择 > 自动选择 > AI优选
-          const proxies = ["手动选择", "自动选择", "AI优选", ...customOrder.filter(p => p !== "手动选择" && p !== "自动选择" && p !== "AI优选")];
-          const allOptions = Utils.unique([...proxies, ...selectedNodes, ...regionNames]);
+          const proxies = ["手动选择", "自动选择", "智能优选", ...customOrder.filter(p => p !== "手动选择" && p !== "自动选择" && p !== "智能优选")];
+          
+          // 添加全局故障转移组到第一位
+          const allOptions = Utils.unique(["故障转移", ...proxies, ...regionNames]);
           
           groups.push({
             ...base, 
@@ -2099,10 +2553,10 @@ const Sirkey = (() => {
       }
       
       // ========== 4. 调整分组顺序：核心组置顶 ==========
-      // 修复：按正确的优先级顺序排列 - 手动选择 > 自动选择 > AI优选
+      // 修复：按正确的优先级顺序排列 - 手动选择 > 自动选择 > 智能优选
       try{
          // 先移除这三个核心组
-         const bestIdx = groups.findIndex(g => g && g.name === "AI优选");
+         const bestIdx = groups.findIndex(g => g && g.name === "智能优选");
          const best = bestIdx > -1 ? groups.splice(bestIdx, 1)[0] : null;
          
          const autoIdx = groups.findIndex(g => g && g.name === "自动选择");
@@ -2111,8 +2565,8 @@ const Sirkey = (() => {
          const manualIdx = groups.findIndex(g => g && g.name === "手动选择");
          const manual = manualIdx > -1 ? groups.splice(manualIdx, 1)[0] : null;
          
-         // 按正确的优先级顺序插入到最前面：手动选择 > 自动选择 > AI优选
-         if(best) groups.unshift(best);      // 第三优先级：AI优选
+         // 按正确的优先级顺序插入到最前面：手动选择 > 自动选择 > 智能优选
+         if(best) groups.unshift(best);      // 第三优先级：智能优选
          if(auto) groups.unshift(auto);      // 第二优先级：自动选择
          if(manual) groups.unshift(manual);  // 第一优先级：手动选择（最高）
        }catch(e){
