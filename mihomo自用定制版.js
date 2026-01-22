@@ -1,5 +1,5 @@
 /**
- * Mihomo 深度优化脚本 v4.6-2026.01.13-fixed
+ * Mihomo 深度优化脚本 v5.0-optimized
  * 
  * 核心特性：
  * - 异步兼容 + 静默探测
@@ -7,6 +7,7 @@
  * - 准入标准：85分优质 / 70分良好 / 55分最低
  * - 服务器白名单：50+ 提供商（S/A/B三级）
  * - 免费节点友好：不因域名类型歧视性扣分
+ * - 性能优化：快速预筛选 + 智能分层采样（300-400节点）
  */
 
 "use strict";
@@ -33,7 +34,7 @@ const Sirkey = (() => {
     return Object.freeze({
       isMihomo, platform, canAsync, isVerge,
       get: () => platform,
-      version: "v4.6-2026.01.13-fixed",
+      version: "v5.0-optimized",
       useES2022: true
     });
   })();
@@ -56,34 +57,7 @@ const Sirkey = (() => {
     DEBUG: false
   });
 
-  /* 日志与脱敏 */
-  const DataMasker = {
-    maskUrl: (url) => typeof url === "string" ? url.replace(CONSTANTS.RE.URL_MASK, "$1***") : url,
-    maskIPStr(str) {
-      return typeof str === "string"
-        ? str.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, ip => Utils.isPrivateIP(ip) ? ip : ip.replace(/\d{1,3}$/, "***"))
-        : str;
-    },
-    mask(str) {
-      if (typeof str !== "string") return str;
-      let res = str.replace(CONSTANTS.RE.URL_MASK, "$1***");
-      res = res.replace(/([?&; ])(password|token|key|secret|auth|credential|access|bearer|authorization|cookie|session)([:= ])[^;& ]+/gi, "$1$2$3***");
-      return DataMasker.maskIPStr(res);
-    },
-    maskObject(obj, depth = 0) {
-      if (depth > 4 || !obj || typeof obj !== "object") return obj;
-      if (Array.isArray(obj)) return obj.map(v => DataMasker.maskObject(v, depth + 1));
-      const out = {};
-      for (const [k, v] of Object.entries(obj)) {
-        if (CONSTANTS.RE.SENSITIVE_KEY.test(k)) out[k] = "***";
-        else if (typeof v === "string") out[k] = DataMasker.mask(v);
-        else if (v && typeof v === "object") out[k] = DataMasker.maskObject(v, depth + 1);
-        else out[k] = v;
-      }
-      return out;
-    }
-  };
-
+  /* 日志系统（简化版） */
   const Logger = new (class {
     _levelMap = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
     _currentLevel = CONSTANTS.DEBUG ? 0 : 1;
@@ -91,17 +65,17 @@ const Sirkey = (() => {
     log(level, ctx, ...args) {
       if (this._levelMap[level] < this._currentLevel) return;
       const prefix = `[${level}] [${ctx || "Global"}]`;
-      const sanitized = args.map(a => {
+      const formatted = args.map(a => {
         if (a === null) return "null";
         if (a === undefined) return "undefined";
         if (typeof a === "object") {
           try { 
-            return (typeof JSON !== "undefined") ? JSON.stringify(DataMasker.maskObject(a)) : "[Object]";
+            return (typeof JSON !== "undefined") ? JSON.stringify(a) : "[Object]";
           } catch { return "[Object]"; }
         }
-        return DataMasker.maskIPStr(String(a));
+        return String(a);
       });
-      const msg = `${prefix} ${sanitized.join(" ")}`;
+      const msg = `${prefix} ${formatted.join(" ")}`;
       if (typeof log === "function") {
         log(msg);
       } else if (typeof console !== "undefined" && typeof console.log === "function") {
@@ -168,11 +142,11 @@ const Sirkey = (() => {
     regexToMihomo(re){return re instanceof RegExp ? (re.ignoreCase?"(?i)":"")+re.source : String(re);},
     getProxyGroupBase(){
       return {
-        interval: Config.common?.proxyGroup?.interval ?? 300,
+        interval: Config.common?.proxyGroup?.interval ?? 180,  // 🔧 从 5 分钟缩短到 3 分钟
         timeout: Config.common?.proxyGroup?.timeout ?? 3000,
         url: Config.common?.proxyGroup?.url ?? "https://cp.cloudflare.com/generate_204",
-        lazy: Config.common?.proxyGroup?.lazy ?? true,
-        "max-failed-times": Config.common?.proxyGroup?.maxFailedTimes ?? 3,
+        lazy: Config.common?.proxyGroup?.lazy ?? false,  // ✅ 禁用懒加载，主动检测
+        "max-failed-times": Config.common?.proxyGroup?.maxFailedTimes ?? 2,  // 🔧 从 3 次降低到 2 次
         "expected-status": "204"
       };
     },
@@ -229,44 +203,25 @@ const Sirkey = (() => {
   })();
 
   /* 镜像与资源 */
-  class SirkeyError extends Error { constructor(m,c="INTERNAL_ERROR"){super(m);this.name="SirkeyError";this.code=c;this.timestamp=Date.now();} }
-  class ConfigurationError extends SirkeyError { constructor(m){super(m,"CONFIG_ERROR");} }
-  class InvalidRequestError extends SirkeyError { constructor(m){super(m,"INVALID_REQUEST");} }
-
-  const MIRROR_CONFIG = {
-    primary: "https://cdn.jsdelivr.net/gh/",
-    fallbacks: [
-      "https://ghproxy.net/",
-      "https://mirror.ghproxy.com/",
-      "https://github.moeyy.xyz/",
-      "https://gh.api.99988866.xyz/",
-      ""
-    ],
-    current: "https://cdn.jsdelivr.net/gh/"
-  };
-
-  let GH_PROXY = MIRROR_CONFIG.current;
-
-  async function selectBestMirror(){ return GH_PROXY; }
-  const MIRROR_STATUS = new Map();
-
+  let GH_PROXY = "https://cdn.jsdelivr.net/gh/";
+  
   const ICON_VAL = (f)=>{try{return typeof f==="function"?f():(f??"");}catch{return"";}};
 
+  /* 图标配置（精简版） */
   const ICONS = (() => {
     const base = "https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color";
     const map = {
-      ChinaMap:"China_Map",HongKong:"Hong_Kong",UnitedStates:"United_States",
-      UnitedKingdom:"United_Kingdom",WorldMap:"Global",StreamingNotCN:"Streaming",
-      StreamingCN:"StreamingCN",ChatGPT:"ChatGPT",Claude:"Claude",Gemini:"Gemini",
-      YouTube:"YouTube",Netflix:"Netflix",DisneyPlus:"Disney",PrimeVideo:"Prime_Video",
-      HBO:"HBO",Hulu:"Hulu",TikTok:"TikTok",Bilibili:"Bilibili",Bahamut:"Bahamut",
-      TVB:"TVB",Pixiv:"Pixiv",Spotify:"Spotify",Telegram:"Telegram",Discord:"Discord",
-      WhatsApp:"WhatsApp",Line:"Line",Slack:"Slack",Speedtest:"Speedtest",Steam:"Steam",
-      Epic:"Epic",Game:"Game",Apple:"Apple",Microsoft:"Microsoft",Google:"Google",
-      GoogleSearch:"Google_Search",Download:"Download",Proxy:"Proxy",Firewall:"Firewall",Update:"Update",
-      Reject:"Privacy",Book:"Scholar",Taiwan:"Taiwan",Japan:"Japan",Singapore:"Singapore",Korea:"Korea",
-      Germany:"Germany",France:"France",Malaysia:"Malaysia",Turkey:"Turkey",Russia:"Russia",Canada:"Canada",
-      Australia:"Australia",Apple2:"Apple",GitHub:"GitHub",Advertising:"Privacy",Premium:"Global"
+      HongKong:"Hong_Kong", Japan:"Japan", Singapore:"Singapore", UnitedStates:"United_States",
+      Korea:"Korea", UnitedKingdom:"United_Kingdom", Germany:"Germany", France:"France",
+      Canada:"Canada", WorldMap:"Global", StreamingNotCN:"Streaming", StreamingCN:"StreamingCN",
+      ChatGPT:"ChatGPT", Claude:"Claude", Gemini:"Gemini", YouTube:"YouTube", Netflix:"Netflix",
+      DisneyPlus:"Disney", PrimeVideo:"Prime_Video", HBO:"HBO", Hulu:"Hulu", TikTok:"TikTok",
+      Bilibili:"Bilibili", Bahamut:"Bahamut", TVB:"TVB", Pixiv:"Pixiv", Spotify:"Spotify",
+      Telegram:"Telegram", Discord:"Discord", WhatsApp:"WhatsApp", Line:"Line", Slack:"Slack",
+      Speedtest:"Speedtest", Steam:"Steam", Epic:"Epic", Game:"Game", GitHub:"GitHub",
+      Google:"Google", GoogleSearch:"Google_Search", Microsoft:"Microsoft", Apple:"Apple",
+      Download:"Download", Proxy:"Proxy", Firewall:"Firewall", Reject:"Privacy",
+      Book:"Scholar", Premium:"Global", Advertising:"Privacy"
     };
     
     return new Proxy({},{
@@ -289,22 +244,39 @@ const Sirkey = (() => {
       }
       
       if(GH_PROXY.includes("jsdelivr.net")){
+        // 处理 raw.githubusercontent.com
         const rawMatch = clean.match(CONSTANTS.RE.GH_RAW);
         if(rawMatch){
           const [,user,repo,branch,path]=rawMatch;
-          return `https://cdn.jsdelivr.net/gh/${user}/${repo}@${branch}/${path}`;
+          // ✅ 确保 branch 不包含 "refs/heads/" 前缀
+          const cleanBranch = branch.replace(/^refs\/heads\//, '');
+          const result = `https://cdn.jsdelivr.net/gh/${user}/${repo}@${cleanBranch}/${path}`;
+          Logger.debug("URLMirror", `raw.githubusercontent.com -> jsDelivr: ${result}`);
+          return result;
         }
         
+        // 处理 github.com/releases/download
         const releaseMatch = clean.match(CONSTANTS.RE.GH_RELEASE);
         if(releaseMatch){
           const [,user,repo,tag,file]=releaseMatch;
-          return `https://cdn.jsdelivr.net/gh/${user}/${repo}@${tag}/${file}`;
+          // ✅ 使用正确的 jsDelivr 格式
+          const result = `https://cdn.jsdelivr.net/gh/${user}/${repo}@${tag}/${file}`;
+          Logger.debug("URLMirror", `github.com/releases -> jsDelivr: ${result}`);
+          return result;
+        }
+        
+        // ✅ 兜底：如果是 raw.githubusercontent.com，直接返回（不转换）
+        if(clean.includes('raw.githubusercontent.com')){
+          Logger.debug("URLMirror", `保持原始 URL: ${clean}`);
+          return clean;
         }
       }
       
       const base = GH_PROXY.endsWith("/")?GH_PROXY:GH_PROXY+"/";
       const path = clean.startsWith("/")?clean.slice(1):clean;
-      return base+path;
+      const result = base+path;
+      Logger.debug("URLMirror", `默认镜像: ${result}`);
+      return result;
     },
     geox:{
       geoip:()=>URLS._getMirrorUrl("https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"),
@@ -531,269 +503,20 @@ const Sirkey = (() => {
       postRules:["GEOSITE,private,DIRECT","GEOIP,private,DIRECT,no-resolve","RULE-SET,ls_cn,国内网站","RULE-SET,acl4ssr_china,国内网站","GEOSITE,cn,国内网站","GEOIP,cn,国内网站,no-resolve","MATCH,其他节点"] 
     },
     failureDetection: {
-      gaming: { maxFailedTimes: 2, interval: 180, tolerance: 30, timeout: 3000 },
-      streaming: { maxFailedTimes: 5, interval: 300, tolerance: 100, timeout: 8000 },
-      browsing: { maxFailedTimes: 3, interval: 300, tolerance: 50, timeout: 5000 },
-      download: { maxFailedTimes: 4, interval: 300, tolerance: 80, timeout: 6000 }
+      gaming: { maxFailedTimes: 1, interval: 120, tolerance: 20, timeout: 2500 },      // ✅ 游戏最严格：1次失败即切换
+      streaming: { maxFailedTimes: 2, interval: 180, tolerance: 80, timeout: 6000 },   // ✅ 流媒体适中：2次失败切换
+      browsing: { maxFailedTimes: 2, interval: 180, tolerance: 40, timeout: 4000 },    // ✅ 浏览适中：2次失败切换
+      download: { maxFailedTimes: 2, interval: 180, tolerance: 60, timeout: 5000 }     // ✅ 下载适中：2次失败切换
     },
     performance: { heavyProxyThreshold: 800, ioBudgetPerTick: 16 }
   };
 
   /* 基础组件 */
-  
-  class LRUCache {
-    constructor({maxSize=300,ttl=3600000,persist=null}={}) {
-      this._l1=new Map();
-      this._l2=new Map();
-      this._maxSize=maxSize;
-      this._ttl=ttl;
-      this._h=0; this._m=0;
-      this._persist = (persist !== null) ? !!persist : !!(Config.aiOptions?.cache?.persistence);
-      this._pendingWrites = new Map();
-      this._maxPendingWrites = 1000;
-    }
-
-    _entry(v,ttl){return {value:v,timestamp:Date.now(),ttl:ttl||this._ttl};}
-
-    get(key){
-      const now=Date.now();
-      let e=this._l1.get(key);
-      const check=(map,k)=>{
-        const ent=map.get(k);
-        if(!ent) return null;
-        if(now-ent.timestamp>(ent.ttl||this._ttl)){map.delete(k);return null;}
-        return ent;
-      };
-      e=check(this._l1,key);
-      if(e){this._h++;return e.value;}
-      e=check(this._l2,key);
-      if(e){this._h++;this._promote(key,e);return e.value;}
-      this._m++;
-      return null;
-    }
-
-    set(key,val,ttl,persist=true){
-      const e=this._entry(val,ttl);
-      this._l1.set(key,e);
-      this._evict();
-      if(persist && this._persist){
-        try{
-          if (this._pendingWrites.size >= this._maxPendingWrites) {
-            Logger.warn("LRU.Set", `待写入队列已满 (${this._maxPendingWrites})，强制刷新`);
-            this.flushPersistence(50, false);
-          }
-          this._pendingWrites.set(key, JSON.stringify(e));
-        }catch(err){
-          Logger.error("LRU.Set", `序列化失败: ${err.message}`);
-        }
-      }
-    }
-
-    _promote(key,entry){
-      this._l2.delete(key); this._l1.set(key,entry); this._evict();
-    }
-
-    _evict(){
-      if(this._l1.size>this._maxSize){
-        const oldest=this._l1.keys().next().value;
-        const ent=this._l1.get(oldest);
-        this._l2.set(oldest,ent); this._l1.delete(oldest);
-        if(this._l2.size>this._maxSize) this._l2.delete(this._l2.keys().next().value);
-      }
-    }
-
-    validate(){
-      const now=Date.now(); let cleaned=0;
-      const clean=map=>{
-        for(const [k,v] of map.entries()){
-          if(now-v.timestamp>(v.ttl||this._ttl)){map.delete(k);cleaned++;}
-        }
-      };
-      clean(this._l1); clean(this._l2);
-      if(cleaned) Logger.debug("LRU.Validate",`清理 ${cleaned} 条缓存`);
-    }
-
-    getStats(){
-      const t=this._h+this._m;
-      return {hits:this._h,misses:this._m,ratio:t?this._h/t:0,l1Size:this._l1.size,l2Size:this._l2.size,_maxSize:this._maxSize};
-    }
-
-    clear(){
-      this._l1.clear();
-      this._l2.clear();
-      this._pendingWrites.clear();
-    }
-
-    flushPersistence(ioBudget=16, force=false){
-      if(!this._persist || !this._pendingWrites.size) return;
-      const iter = this._pendingWrites.entries();
-      let count = 0;
-      const limit = force ? Infinity : ioBudget;
-      
-      for(const [key, serialized] of iter){
-        try{
-          PersistentStorage.write(key, serialized);
-        }catch(e){
-          Logger.error("LRU.Flush", `写入失败: ${key}`, e.message);
-        }
-        this._pendingWrites.delete(key);
-        count++;
-        if(count >= limit) break;
-      }
-      if(count) Logger.debug("LRU.Flush",`刷盘 ${count} 条, 剩余: ${this._pendingWrites.size}`);
-    }
-
-    flushAll() {
-      return this.flushPersistence(Infinity, true);
-    }
-  }
-
-  class HttpClient {
-    constructor(){
-      this._avail=null;
-      this._mirrorFailCount = new Map();
-    }
-    _check(){
-      if(this._avail!==null) return this._avail;
-      this._avail = (typeof fetch==="function");
-      return this._avail;
-    }
-    
-    _handleMirrorFailure(url){
-      if(!url || !GH_PROXY) return;
-      
-      if(!url.includes("github") && !url.includes("jsdelivr")) return;
-      
-      const currentCount = this._mirrorFailCount.get(GH_PROXY) || 0;
-      this._mirrorFailCount.set(GH_PROXY, currentCount + 1);
-      
-      if(currentCount + 1 >= 3){
-        let currentIndex = MIRROR_CONFIG.fallbacks.indexOf(GH_PROXY);
-        if(currentIndex === -1) {
-          Logger.warn("HttpClient", `当前镜像不在列表中，重置到第一个`);
-          currentIndex = -1;
-        }
-        
-        const nextIndex = (currentIndex + 1) % MIRROR_CONFIG.fallbacks.length;
-        const nextMirror = MIRROR_CONFIG.fallbacks[nextIndex];
-        
-        Logger.warn("HttpClient", `镜像失败${currentCount + 1}次，切换到: ${nextMirror || 'GitHub直连'}`);
-        
-        GH_PROXY = nextMirror;
-        MIRROR_CONFIG.current = nextMirror;
-        this._mirrorFailCount.clear();
-      }
-    }
-    
-    async safeFetch(url,opt={},timeout=5000){
-      if(!this._check()) throw new SirkeyError("No HTTP client","HTTP_CLIENT_MISSING");
-      const start=Date.now();
-      try{
-        if(typeof fetch==="function"){
-          const ctrl = typeof AbortController!=="undefined"?new AbortController():null;
-          const timer = ctrl?setTimeout(()=>ctrl.abort(),timeout):null;
-          try{
-            const method = opt.method || "GET";
-            const resp=await fetch(url,{...opt,method,signal:ctrl?.signal});
-            Logger.debug("HttpClient",`${method} ${url} ok in ${Date.now()-start}ms`);
-            if(opt.proxy && opt.statsManager) opt.statsManager.recordSuccess(opt.proxy);
-            return resp;
-          }finally{if(timer)clearTimeout(timer);}
-        }
-      }catch(e){
-        Logger.error("HttpClient",`失败 ${url}: ${e.message}`); 
-        if(opt.proxy && opt.statsManager) opt.statsManager.recordFailure(opt.proxy);
-        
-        this._handleMirrorFailure(url);
-        
-        throw e;
-      }
-      throw new SirkeyError("Env HTTP exec error","HTTP_CLIENT_EXEC_ERROR");
-    }
-
-    async probeNodes(proxies, statsManager, timeout = 800, maxConcurrency = 30) {
-      if (!proxies || !proxies.length) return [];
-      const results = new Map();
-      const checkUrl = "http://cp.cloudflare.com/generate_204";
-      
-      for (let i = 0; i < proxies.length; i += maxConcurrency) {
-        const batch = proxies.slice(i, i + maxConcurrency);
-        await Promise.allSettled(batch.map(async (p) => {
-          try {
-            await this.safeFetch(checkUrl, { 
-              method: "HEAD", 
-              proxy: p, 
-              statsManager: statsManager 
-            }, timeout);
-            results.set(p.name || p, true);
-          } catch (e) {
-            results.set(p.name || p, false);
-          }
-        }));
-      }
-      return results;
-    }
-  }
 
   /**
    * 后台静默预检引擎
    * 采用“异步探测，同步交付”策略，在不影响主流程返回的前提下，利用下一次执行更新状态
    */
-  class BackgroundProbe {
-    constructor(httpClient, statsManager) {
-      this._http = httpClient;
-      this._stats = statsManager;
-    }
-
-    trigger(proxies) {
-      if (!Env.canAsync) {
-        Logger.debug("BackgroundProbe", "当前环境不支持异步，跳过后台预检");
-        return;
-      }
-      
-      const now = Date.now();
-      const interval = CONSTANTS.TIME.HOUR;
-      
-      if (GLOBAL_STATS.checkInProgress) return;
-      if (GLOBAL_STATS.probeDisabled && now < (GLOBAL_STATS.probeDisabledUntil || 0)) {
-        Logger.debug("BackgroundProbe", "后台预检已禁用，跳过");
-        return;
-      }
-      if (now - (GLOBAL_STATS.lastCheckTime || 0) < interval) return;
-      
-      Logger.info("BackgroundProbe", "触发后台静默预检 (异步非阻塞)...");
-      GLOBAL_STATS.checkInProgress = true;
-      
-      // 使用 setTimeout 确保不阻塞主流程返回
-      setTimeout(() => {
-        const runProbe = async () => {
-          try {
-            // 挑选部分核心节点进行预检，避免资源消耗过大
-            const targetNodes = proxies.filter(p => {
-              const name = String(p?.name || "");
-              return /HK|MO|TW|SG|JP|US|香港|澳门|台湾|新加坡|日本|美国|港|澳|台/i.test(name);
-            }).slice(0, 60);
-
-            if (targetNodes.length > 0) {
-              await this._http.probeNodes(targetNodes, this._stats, 1000, 15);
-              GLOBAL_STATS.lastCheckTime = Date.now();
-              Logger.info("BackgroundProbe", `静默预检完成，已更新 ${targetNodes.length} 个核心节点的统计数据`);
-            }
-          } catch (e) {
-            Logger.error("BackgroundProbe", "预检执行异常", e.message);
-            GLOBAL_STATS.probeDisabled = true;
-            GLOBAL_STATS.probeDisabledUntil = Date.now() + CONSTANTS.TIME.HOUR;
-            Logger.warn("BackgroundProbe", "后台预检已禁用1小时，避免重复失败");
-          } finally {
-            GLOBAL_STATS.checkInProgress = false;
-          }
-        };
-        runProbe();
-      }, 3000); // 延迟 3 秒启动，避开启动峰值
-    }
-  }
-
-  /* 智能评分与筛选系统 */
   class AIEngine {
     constructor(statsManager) {
       this._stats = statsManager;
@@ -801,65 +524,28 @@ const Sirkey = (() => {
       
       this._SERVER_WHITELIST = {
         TIER_S: [
-          { pattern: /amazonaws\.com|aws/i, name: 'AWS', score: 10 },
-          { pattern: /googleusercontent\.com|gcp\.google|cloud\.google/i, name: 'Google Cloud', score: 10 },
-          { pattern: /azure|microsoft\.com|windows\.net/i, name: 'Microsoft Azure', score: 10 },
           { pattern: /cloudflare/i, name: 'Cloudflare', score: 10 },
-          { pattern: /akamai/i, name: 'Akamai', score: 10 },
           { pattern: /fastly/i, name: 'Fastly', score: 10 },
-          { pattern: /aliyun\.com|alibabacloud/i, name: 'Alibaba Cloud', score: 10 },
-          { pattern: /tencentcloud|qcloud/i, name: 'Tencent Cloud', score: 10 },
-          { pattern: /huaweicloud/i, name: 'Huawei Cloud', score: 10 },
-          { pattern: /oracle\.com|oraclecloud/i, name: 'Oracle Cloud', score: 10 }
+          { pattern: /akamai/i, name: 'Akamai', score: 10 }
         ],
         
         TIER_A: [
-          { pattern: /vultr/i, name: 'Vultr', score: 7 },
+          { pattern: /amazonaws|aws/i, name: 'AWS', score: 8 },
+          { pattern: /azure|microsoft/i, name: 'Azure', score: 8 },
+          { pattern: /google|gcp/i, name: 'GCP', score: 8 },
           { pattern: /digitalocean/i, name: 'DigitalOcean', score: 7 },
-          { pattern: /linode/i, name: 'Linode', score: 7 },
-          { pattern: /contabo/i, name: 'Contabo', score: 7 },
-          { pattern: /hetzner/i, name: 'Hetzner', score: 7 },
-          { pattern: /ovh/i, name: 'OVH', score: 7 },
-          { pattern: /online\.net|scaleway/i, name: 'Scaleway', score: 7 },
-          { pattern: /dmit/i, name: 'DMIT', score: 8 },
-          { pattern: /rackspace/i, name: 'Rackspace', score: 7 },
-          { pattern: /softlayer|ibm\.com/i, name: 'IBM Cloud', score: 7 },
-          { pattern: /hkbn|hkt\.com/i, name: 'HKT/HKBN', score: 8 },
-          { pattern: /pccw/i, name: 'PCCW', score: 8 },
-          { pattern: /hgc\.com\.hk/i, name: 'HGC', score: 8 },
-          { pattern: /hk\.chinamobile/i, name: 'CMHK', score: 8 },
-          { pattern: /hutchison/i, name: 'Hutchison', score: 8 }
+          { pattern: /vultr/i, name: 'Vultr', score: 7 },
+          { pattern: /aliyun|alibabacloud/i, name: 'Aliyun', score: 7 },
+          { pattern: /tencent|qcloud/i, name: 'Tencent', score: 7 }
         ],
         
         TIER_B: [
-          { pattern: /bandwagonhost|bwh/i, name: 'BandwagonHost', score: 5 },
-          { pattern: /ramnode/i, name: 'RamNode', score: 5 },
-          { pattern: /buyvm/i, name: 'BuyVM', score: 5 },
-          { pattern: /hostwinds/i, name: 'HostWinds', score: 5 },
-          { pattern: /hostdare/i, name: 'HostDare', score: 5 },
-          { pattern: /hostus/i, name: 'HostUS', score: 5 },
-          { pattern: /virmach/i, name: 'VirMach', score: 5 },
-          { pattern: /quadranet/i, name: 'QuadraNet', score: 5 },
-          { pattern: /conoha/i, name: 'ConoHa', score: 6 },
-          { pattern: /sakura/i, name: 'Sakura', score: 6 },
-          { pattern: /kddi/i, name: 'KDDI', score: 6 },
-          { pattern: /ntt\.com/i, name: 'NTT', score: 6 },
-          { pattern: /iij\.ad\.jp/i, name: 'IIJ', score: 6 },
-          { pattern: /softbank/i, name: 'SoftBank', score: 6 },
-          { pattern: /singtel/i, name: 'SingTel', score: 6 },
-          { pattern: /starhub/i, name: 'StarHub', score: 6 },
-          { pattern: /m1\.com\.sg/i, name: 'M1', score: 6 },
-          { pattern: /hinet\.net/i, name: 'HiNet', score: 6 },
-          { pattern: /seednet/i, name: 'SeedNet', score: 6 },
-          { pattern: /so-net\.net\.tw/i, name: 'So-net', score: 6 }
+          { pattern: /linode/i, name: 'Linode', score: 5 },
+          { pattern: /ovh/i, name: 'OVH', score: 5 },
+          { pattern: /hetzner/i, name: 'Hetzner', score: 5 }
         ],
         
         BLACKLIST: [
-          { pattern: /\.cn$/i, score: -5, reason: '国内服务器' },
-          { pattern: /\.ru$/i, score: -8, reason: '俄罗斯服务器' },
-          { pattern: /\.ir$/i, score: -10, reason: '伊朗服务器' },
-          { pattern: /\.kp$/i, score: -20, reason: '朝鲜服务器' },
-          
           { pattern: /localhost|127\.0\.0\.1/i, score: -100, reason: '本地地址' }
         ]
       };
@@ -868,73 +554,44 @@ const Sirkey = (() => {
         PROTOCOLS: {
           'hysteria2': 15, 'tuic': 15,           // 现代高性能协议
           'vless': 12, 'trojan': 10,             // 轻量级协议
-          'ss': 8, 'snell': 8,                   // 经典协议
-          'vmess': 5, 'ssr': 3,                  // 较重协议
-          'http': 2, 'socks5': 2                 // 基础协议
+          'ss': 8, 'vmess': 5, 'ssr': 3          // 经典协议
         },
         
         // 正面关键词（+分）
         POSITIVE_KEYWORDS: {
           // 高级标识
-          'Premium': 5, 'Pro': 4, 'Plus': 3, 'VIP': 3, 'Elite': 4, 'Ultimate': 4,
+          'Premium': 5, 'Pro': 4, 'VIP': 3, 'Elite': 4,
           // 优化标识
-          '游戏': 3, 'Game': 3, 'Gaming': 3, '流媒体': 2, 'Streaming': 2, 'Netflix': 2,
-          '解锁': 2, 'Unlock': 2, '实验性': 2, 'Experimental': 2, '优化': 2, 'Optimized': 2,
-          // 稳定性标识
-          '稳定': 2, 'Stable': 2, '推荐': 2, 'Recommended': 2,
+          '游戏': 3, 'Game': 3, '流媒体': 2, 'Streaming': 2,
+          '解锁': 2, 'Unlock': 2, '优化': 2, 'Optimized': 2,
           // 线路类型
-          'IPLC': 12, 'IEPL': 12, 'BGP': 10, 'CN2 GIA': 10, 'CN2-GIA': 10, 'CN2': 8, 'GIA': 8,
-          '专线': 12, '内网': 12, '直连': 6, 'Direct': 6, '中转': 4, 'Relay': 4,
-          // ISP 标识
-          'HKT': 8, 'HKBN': 8, 'PCCW': 8, 'HGC': 8
+          'IPLC': 12, 'IEPL': 12, 'BGP': 10, 'CN2 GIA': 10, 'CN2': 8,
+          '专线': 12, '直连': 6, 'Direct': 6
         },
         
         // 负面关键词（-分）
         NEGATIVE_KEYWORDS: {
-          // 严重问题（直接排除）
-          '过期': -100, '到期': -100, 'Expire': -100, 'Expired': -100,
+          // 严重问题
+          '过期': -100, 'Expire': -100, 'Expired': -100,
           '维护': -50, 'Maintenance': -50, '故障': -50, 'Down': -50,
           // 质量问题
           '测试': -20, 'Test': -20, '备用': -10, 'Backup': -10,
-          '试用': -10, 'Trial': -10,
-          // 限制标识
-          '限速': -15, 'Limited': -10, '共享': -8, 'Shared': -8
-          
-          // ❌ 已移除：'免费': -15, 'Free': -15 - 支持免费节点用户
-          // 说明：免费节点虽然质量可能较低，但不应直接扣分，让其他维度（性能、稳定性）来评判
+          '试用': -10, 'Trial': -10, '限速': -15, 'Limited': -10
         },
         
         // 地区评分（0-10分）
         REGIONS: {
-          // 亚洲近距离（最优）
-          'HK': 10, 'MO': 10, 'TW': 9,
-          // 亚洲枢纽
-          'SG': 9, 'JP': 8, 'KR': 7,
-          // 北美
-          'US': 6, 'CA': 5,
-          // 欧洲
-          'UK': 4, 'DE': 4, 'FR': 4, 'NL': 4,
-          // 其他亚洲
-          'TH': 6, 'MY': 6, 'PH': 5, 'IN': 4,
-          // 大洋洲
-          'AU': 5,
-          // 其他
-          'RU': 2, 'BR': 2, 'AR': 2
+          'HK': 10, 'MO': 10, 'TW': 9,           // 港澳台
+          'SG': 9, 'JP': 8, 'KR': 7,             // 亚洲枢纽
+          'US': 6, 'CA': 5,                      // 北美
+          'UK': 4, 'DE': 4, 'FR': 4, 'NL': 4     // 欧洲
         },
         
         // 城市加分（0-2分）
         CITIES: {
-          // 香港
-          '香港': 2, 'HK': 2, 'Hong Kong': 2,
-          // 台湾
-          '台北': 2, 'Taipei': 2,
-          // 日本
-          '东京': 2, 'Tokyo': 2, '大阪': 1, 'Osaka': 1,
-          // 新加坡
-          '新加坡': 2, 'Singapore': 2,
-          // 美国
-          '洛杉矶': 2, 'Los Angeles': 2, 'LA': 2,
-          '圣何塞': 2, 'San Jose': 2, '西雅图': 1, 'Seattle': 1, '纽约': 1, 'New York': 1
+          '香港': 2, 'HK': 2, '台北': 2, 'Taipei': 2,
+          '东京': 2, 'Tokyo': 2, '新加坡': 2, 'Singapore': 2,
+          '洛杉矶': 2, 'Los Angeles': 2, 'LA': 2
         }
       };
       
@@ -954,6 +611,81 @@ const Sirkey = (() => {
       if (["browsing", "gaming", "streaming", "download"].includes(scene)) {
         this._currentScene = scene;
       }
+    }
+
+    /**
+     * 辅助方法：地区识别
+     * @param {string} name - 节点名称
+     * @returns {string} 地区代码（如 'HK', 'TW'）或 '其他'
+     */
+    _detectRegion(name) {
+      const regionMap = {
+        '香港': 'HK', 'HK': 'HK', '港': 'HK', 'Hong Kong': 'HK', 'Hongkong': 'HK',
+        '澳门': 'MO', 'MO': 'MO', '澳': 'MO', 'Macao': 'MO', 'Macau': 'MO',
+        '台湾': 'TW', 'TW': 'TW', '台': 'TW', 'Taiwan': 'TW',
+        '日本': 'JP', 'JP': 'JP', '东京': 'JP', 'Tokyo': 'JP', 'Japan': 'JP',
+        '新加坡': 'SG', 'SG': 'SG', '狮城': 'SG', 'Singapore': 'SG',
+        '美国': 'US', 'US': 'US', '美': 'US', 'United States': 'US', 'America': 'US',
+        '韩国': 'KR', 'KR': 'KR', '韩': 'KR', 'Korea': 'KR',
+        '英国': 'UK', 'UK': 'UK', 'United Kingdom': 'UK', 'Britain': 'UK',
+        '德国': 'DE', 'DE': 'DE', 'Germany': 'DE',
+        '法国': 'FR', 'FR': 'FR', 'France': 'FR',
+        '荷兰': 'NL', 'NL': 'NL', 'Netherlands': 'NL'
+      };
+      
+      for (const [key, code] of Object.entries(regionMap)) {
+        if (name.includes(key)) return code;
+      }
+      return '其他';
+    }
+
+    /**
+     * 辅助方法：协议评分
+     * @param {string} type - 协议类型
+     * @param {Object} proxy - 代理对象
+     * @returns {number} 协议得分（0-20）
+     */
+    _getProtocolScore(type, proxy) {
+      let score = this._weights.PROTOCOLS[type] || 0;
+      
+      // 协议特性加分
+      if (proxy.tls) score += 2;
+      if (proxy.udp) score += 2;
+      if (proxy.sni) score += 1;
+      if (proxy['skip-cert-verify'] === false) score += 1;
+      if (proxy.network === 'ws' || proxy.network === 'websocket') score += 1;
+      
+      return Math.min(20, score);
+    }
+
+    /**
+     * 辅助方法：服务器评分
+     * @param {string} server - 服务器地址
+     * @returns {number} 服务器得分（-100 ~ 10）
+     */
+    _getServerScore(server) {
+      if (!server) return -2;
+      
+      // 检查黑名单
+      for (const item of this._SERVER_WHITELIST.BLACKLIST) {
+        if (item.pattern.test(server)) return item.score;
+      }
+      
+      // 检查白名单
+      for (const item of this._SERVER_WHITELIST.TIER_S) {
+        if (item.pattern.test(server)) return item.score;
+      }
+      for (const item of this._SERVER_WHITELIST.TIER_A) {
+        if (item.pattern.test(server)) return item.score;
+      }
+      for (const item of this._SERVER_WHITELIST.TIER_B) {
+        if (item.pattern.test(server)) return item.score;
+      }
+      
+      // IP 地址扣分
+      if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(server)) return -2;
+      
+      return 0;
     }
 
     /**
@@ -999,17 +731,7 @@ const Sirkey = (() => {
       };
       
       // ========== 1. 协议维度（20分）==========
-      // 1.1 协议类型评分（0-15分）
-      breakdown.protocol = this._weights.PROTOCOLS[type] || 0;
-      
-      // 1.2 协议特性加分（0-5分）
-      if (proxy.tls) breakdown.protocol += 2;        // TLS 加密
-      if (proxy.udp) breakdown.protocol += 2;        // UDP 支持
-      if (proxy.sni) breakdown.protocol += 1;        // SNI 配置
-      if (proxy['skip-cert-verify'] === false) breakdown.protocol += 1;  // 证书验证
-      if (proxy.network === 'ws' || proxy.network === 'websocket') breakdown.protocol += 1;  // WebSocket
-      
-      breakdown.protocol = Math.min(20, breakdown.protocol);
+      breakdown.protocol = this._getProtocolScore(type, proxy);
       
       // ========== 2. 性能维度（20分）==========
       // 2.1 倍率评分（0-12分，可为负）
@@ -1075,35 +797,8 @@ const Sirkey = (() => {
       
       // ========== 4. 地理维度（15分）==========
       // 4.1 地区评分（0-10分）
-      const regionMap = {
-        '香港': 'HK', 'HK': 'HK', '港': 'HK', 'Hong Kong': 'HK', 'Hongkong': 'HK',
-        '澳门': 'MO', 'MO': 'MO', '澳': 'MO', 'Macao': 'MO', 'Macau': 'MO',
-        '台湾': 'TW', 'TW': 'TW', '台': 'TW', 'Taiwan': 'TW',
-        '新加坡': 'SG', 'SG': 'SG', '狮城': 'SG', 'Singapore': 'SG',
-        '日本': 'JP', 'JP': 'JP', 'Japan': 'JP',
-        '韩国': 'KR', 'KR': 'KR', 'Korea': 'KR',
-        '美国': 'US', 'US': 'US', '美': 'US', 'United States': 'US', 'America': 'US',
-        '加拿大': 'CA', 'CA': 'CA', 'Canada': 'CA',
-        '英国': 'UK', 'UK': 'UK', 'United Kingdom': 'UK', 'Britain': 'UK',
-        '德国': 'DE', 'DE': 'DE', 'Germany': 'DE',
-        '法国': 'FR', 'FR': 'FR', 'France': 'FR',
-        '荷兰': 'NL', 'NL': 'NL', 'Netherlands': 'NL', 'Holland': 'NL',
-        '泰国': 'TH', 'TH': 'TH', 'Thailand': 'TH',
-        '马来西亚': 'MY', 'MY': 'MY', 'Malaysia': 'MY',
-        '菲律宾': 'PH', 'PH': 'PH', 'Philippines': 'PH',
-        '印度': 'IN', 'IN': 'IN', 'India': 'IN',
-        '澳大利亚': 'AU', 'AU': 'AU', 'Australia': 'AU',
-        '俄罗斯': 'RU', 'RU': 'RU', 'Russia': 'RU',
-        '巴西': 'BR', 'BR': 'BR', 'Brazil': 'BR',
-        '阿根廷': 'AR', 'AR': 'AR', 'Argentina': 'AR'
-      };
-      
-      for (const [key, code] of Object.entries(regionMap)) {
-        if (name.includes(key)) {
-          breakdown.geography = this._weights.REGIONS[code] || 0;
-          break;
-        }
-      }
+      const regionCode = this._detectRegion(name);
+      breakdown.geography = this._weights.REGIONS[regionCode] || 0;
       
       // 4.2 城市加分（0-5分）
       for (const [city, bonus] of Object.entries(this._weights.CITIES)) {
@@ -1151,48 +846,6 @@ const Sirkey = (() => {
         score: Math.max(0, totalScore),
         breakdown: breakdown
       };
-    }
-
-    /**
-     * 服务器质量评分（-100 ~ +10分）
-     */
-    _getServerScore(server) {
-      if (!server) return -2;  // 无服务器信息
-      
-      // 检查 S 级提供商
-      for (const provider of this._SERVER_WHITELIST.TIER_S) {
-        if (provider.pattern.test(server)) {
-          return provider.score;
-        }
-      }
-      
-      // 检查 A 级提供商
-      for (const provider of this._SERVER_WHITELIST.TIER_A) {
-        if (provider.pattern.test(server)) {
-          return provider.score;
-        }
-      }
-      
-      // 检查 B 级提供商
-      for (const provider of this._SERVER_WHITELIST.TIER_B) {
-        if (provider.pattern.test(server)) {
-          return provider.score;
-        }
-      }
-      
-      // 检查黑名单
-      for (const entry of this._SERVER_WHITELIST.BLACKLIST) {
-        if (entry.pattern.test(server)) {
-          return entry.score;
-        }
-      }
-      
-      // 纯 IP 地址（轻微扣分）
-      if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(server)) {
-        return -2;
-      }
-      
-      return 0;  // 未知提供商
     }
 
     /**
@@ -1305,7 +958,65 @@ const Sirkey = (() => {
           context.protocolCounts.set(type, (context.protocolCounts.get(type) || 0) + 1);
         });
 
-        const candidates = proxies.map(p => {
+        // 快速预筛选（避免对所有节点评分）
+        const vetoReg = /Maintenance|Down|Fix|Expired|Error|Timeout|故障|维护|离线|过期|到期/i;
+        const allowedProtocols = new Set(['vmess', 'vless', 'trojan', 'hysteria', 'hysteria2', 'tuic', 'ss', 'ssr']);
+        
+        const fastFiltered = [];
+        for (let i = 0; i < proxies.length; i++) {
+          const p = proxies[i];
+          const name = typeof p === 'string' ? p : String(p.name || "");
+          const type = String(p.type || "").toLowerCase();
+          
+          if (vetoReg.test(name)) continue;
+          if (!allowedProtocols.has(type)) continue;
+          
+          const stats = this._stats ? this._stats.getStats(p) : null;
+          if (stats && stats.failCount > 3) continue;
+          
+          fastFiltered.push(p);
+        }
+        
+        Logger.info("AIEngine", `预筛选: ${proxies.length} -> ${fastFiltered.length} 节点`);
+        
+        // 智能采样（分层抽取）
+        let toScore;
+        const SAMPLE_SIZE = 400; // 地理组样本更大
+        
+        if (fastFiltered.length <= SAMPLE_SIZE) {
+          toScore = fastFiltered;
+        } else {
+          // 分层采样
+          const regionGroups = new Map();
+          fastFiltered.forEach(p => {
+            const name = p.name || "";
+            const region = this._detectRegion(name);
+            
+            if (!regionGroups.has(region)) regionGroups.set(region, []);
+            regionGroups.get(region).push(p);
+          });
+          
+          toScore = [];
+          const totalNodes = fastFiltered.length;
+          regionGroups.forEach((nodes, region) => {
+            const ratio = nodes.length / totalNodes;
+            const sampleCount = Math.max(1, Math.floor(SAMPLE_SIZE * ratio));
+            const shuffled = nodes.sort(() => Math.random() - 0.5);
+            toScore.push(...shuffled.slice(0, Math.min(sampleCount, nodes.length)));
+          });
+          
+          if (toScore.length < SAMPLE_SIZE) {
+            const remaining = fastFiltered.filter(p => !toScore.includes(p));
+            const shuffled = remaining.sort(() => Math.random() - 0.5);
+            toScore.push(...shuffled.slice(0, SAMPLE_SIZE - toScore.length));
+          }
+          
+          toScore = toScore.slice(0, SAMPLE_SIZE);
+        }
+        
+        Logger.info("AIEngine", `智能采样: ${fastFiltered.length} -> ${toScore.length} 节点`);
+
+        const candidates = toScore.map(p => {
           const result = this.scoreComprehensive(p, context);
           const name = typeof p === 'string' ? p : String(p.name || "");
           const isCore = /HK|MO|TW|SG|JP|US|香港|澳门|台湾|新加坡|日本|美国|港|澳|台/i.test(name);
@@ -1415,31 +1126,84 @@ const Sirkey = (() => {
           context.protocolCounts.set(type, (context.protocolCounts.get(type) || 0) + 1);
           
           // 地区统计
-          const regionMap = {
-            '香港': 'HK', 'HK': 'HK', '港': 'HK',
-            '澳门': 'MO', 'MO': 'MO', '澳': 'MO',
-            '台湾': 'TW', 'TW': 'TW', '台': 'TW',
-            '新加坡': 'SG', 'SG': 'SG',
-            '日本': 'JP', 'JP': 'JP',
-            '美国': 'US', 'US': 'US'
-          };
-          
-          for (const [key, code] of Object.entries(regionMap)) {
-            if (name.includes(key)) {
-              context.regionCounts.set(code, (context.regionCounts.get(code) || 0) + 1);
-              break;
-            }
+          const regionCode = this._detectRegion(name);
+          if (regionCode !== '其他') {
+            context.regionCounts.set(regionCode, (context.regionCounts.get(regionCode) || 0) + 1);
           }
         });
         
-        // 输出节点池分析
-        Logger.info("AIEngine.Premium", `节点池分析:`);
-        Logger.info("AIEngine.Premium", `  - 协议分布: ${Array.from(context.protocolCounts.entries()).map(([k, v]) => `${k}=${v}`).join(', ')}`);
-        Logger.info("AIEngine.Premium", `  - 地区分布: ${Array.from(context.regionCounts.entries()).map(([k, v]) => `${k}=${v}`).join(', ')}`);
-        Logger.info("AIEngine.Premium", `  - 服务器数量: ${context.serverCounts.size} 个不同服务器`);
+        // 输出节点池分析（简化日志）
+        Logger.info("AIEngine.Premium", `节点池: 协议${context.protocolCounts.size}种, 地区${context.regionCounts.size}个, 服务器${context.serverCounts.size}个`);
 
-        // ========== 2. 使用综合评分方法评分并过滤劣质节点 ==========
-        const candidates = proxies.map(p => {
+        // ========== 2. 快速预筛选 + 综合评分 ==========
+        // 2.1 第一轮：快速过滤（O(n) 简单操作）
+        const fastFiltered = [];
+        const vetoReg = /Maintenance|Down|Fix|Expired|Error|Timeout|故障|维护|离线|过期|到期/i;
+        const allowedProtocols = new Set(['vmess', 'vless', 'trojan', 'hysteria', 'hysteria2', 'tuic', 'ss', 'ssr']);
+        
+        for (let i = 0; i < proxies.length; i++) {
+          const p = proxies[i];
+          const name = typeof p === 'string' ? p : String(p.name || "");
+          const type = String(p.type || "").toLowerCase();
+          
+          // 快速否决检查
+          if (vetoReg.test(name)) continue;
+          
+          // 协议白名单
+          if (!allowedProtocols.has(type)) continue;
+          
+          // 失败次数检查
+          const stats = this._stats ? this._stats.getStats(p) : null;
+          if (stats && stats.failCount > 3) continue;
+          
+          fastFiltered.push(p);
+        }
+        
+        Logger.info("AIEngine.Premium", `快速预筛选: ${proxies.length} -> ${fastFiltered.length} 节点`);
+        
+        // 2.2 第二轮：智能采样（分层抽取，保证多样性）
+        let toScore;
+        const SAMPLE_SIZE = 300; // 提高到 300 个样本
+        
+        if (fastFiltered.length <= SAMPLE_SIZE) {
+          toScore = fastFiltered;
+        } else {
+          // 分层采样：按地区分组，每组抽取一定比例
+          const regionGroups = new Map();
+          fastFiltered.forEach(p => {
+            const name = p.name || "";
+            const region = this._detectRegion(name);
+            
+            if (!regionGroups.has(region)) regionGroups.set(region, []);
+            regionGroups.get(region).push(p);
+          });
+          
+          // 从每个地区按比例抽取
+          toScore = [];
+          const totalNodes = fastFiltered.length;
+          regionGroups.forEach((nodes, region) => {
+            const ratio = nodes.length / totalNodes;
+            const sampleCount = Math.max(1, Math.floor(SAMPLE_SIZE * ratio));
+            
+            // 随机抽取（保证多样性）
+            const shuffled = nodes.sort(() => Math.random() - 0.5);
+            toScore.push(...shuffled.slice(0, Math.min(sampleCount, nodes.length)));
+          });
+          
+          // 如果还不够，随机补充
+          if (toScore.length < SAMPLE_SIZE) {
+            const remaining = fastFiltered.filter(p => !toScore.includes(p));
+            const shuffled = remaining.sort(() => Math.random() - 0.5);
+            toScore.push(...shuffled.slice(0, SAMPLE_SIZE - toScore.length));
+          }
+          
+          toScore = toScore.slice(0, SAMPLE_SIZE);
+        }
+        
+        Logger.info("AIEngine.Premium", `智能采样: ${fastFiltered.length} -> ${toScore.length} 节点 (分层抽样)`);
+        
+        // 2.3 第三轮：综合评分（只对筛选后的节点）
+        const candidates = toScore.map(p => {
           const result = this.scoreComprehensive(p, context);
           const name = typeof p === 'string' ? p : String(p.name || "");
           const stats = this._stats ? this._stats.getStats(p) : { failCount: 0, successCount: 0 };
@@ -1471,9 +1235,10 @@ const Sirkey = (() => {
 
         if (candidates.length === 0) {
           Logger.error("AIEngine.Premium", "所有节点均不符合最低标准 (评分 < 55 或存在故障)");
-          Logger.warn("AIEngine.Premium", "兜底策略：尝试使用所有可用节点（忽略评分限制）");
+          Logger.warn("AIEngine.Premium", "兜底策略：使用预筛选节点（忽略评分限制）");
           
-          const emergencyNodes = proxies
+          // 复用已经预筛选的节点，避免重新评分
+          const emergencyNodes = toScore
             .map(p => {
               const result = this.scoreComprehensive(p, context);
               return { id: p.name || p, score: result.score, proxy: p };
@@ -1666,7 +1431,7 @@ const Sirkey = (() => {
   /* ========== 8. 节点状态管理器 (Status Manager) ========== */
   class NodeStatsManager {
     constructor(cache) {
-      this._cache = cache || new LRUCache();
+      this._cache = cache || new Map(); // 简化为 Map
       this._stats = GLOBAL_STATS.nodes;
     }
 
@@ -1914,7 +1679,7 @@ const Sirkey = (() => {
 
   class RegionAutoManager {
     constructor(cache){
-      this._cache=cache||new LRUCache();
+      this._cache=cache||new Map(); // 简化为 Map
       this._stats=new NodeStatsManager(this._cache);
       this._ai=new AIEngine(this._stats);
     }
@@ -2004,8 +1769,16 @@ const Sirkey = (() => {
           type: "select",
           proxies: ["故障转移", ...regionNodeNames],  // 引用全局故障转移组
           "include-all": false,
+          lazy: false,  // ✅ 显式禁用懒加载
+          interval: 180,  // ✅ 3 分钟检测一次
+          "max-failed-times": 2,  // ✅ 2 次失败即标记
           icon: ICON_VAL(r.icon)
         });
+        
+        // 🔧 记录故障检测配置
+        Logger.info("FailureDetection", 
+          `地理组 ${r.name}: lazy=false, interval=180s, max-failed-times=2, timeout=3000ms`
+        );
         
         regionCount++;
       }
@@ -2118,15 +1891,13 @@ const Sirkey = (() => {
     constructor(){
       if(CentralManager._instance) return CentralManager._instance;
       
-      // 基础组件：无依赖，直接初始化
-      this._cache=new LRUCache();
-      this._http=new HttpClient();
+      // 基础组件：无依赖，直接初始化（简化版）
+      this._cache=new Map(); // 简化为 Map
       
       // 延迟初始化的管理器：通过 getter 按需创建，避免循环依赖
       this._adBlock=null;
       this._regionMgr=null;
       this._functionalMgr=null;
-      this._probe=null;
       this._initialized = false;
       
       CentralManager._instance=this;
@@ -2134,7 +1905,6 @@ const Sirkey = (() => {
     
     // 基础组件访问器
     get lruCache(){return this._cache;}
-    get httpClient(){return this._http;}
     
     // 延迟初始化的管理器访问器
     get regionAutoManager(){
@@ -2153,14 +1923,6 @@ const Sirkey = (() => {
         this._functionalMgr = new FunctionalGroupManager(ai, stats);
       }
       return this._functionalMgr;
-    }
-    
-    get backgroundProbe(){
-      if(!this._probe) {
-        // 依赖注入：传递 http 和 stats，避免传递整个 manager
-        this._probe=new BackgroundProbe(this._http, this.regionAutoManager.stats);
-      }
-      return this._probe;
     }
 
     initialize(){
@@ -2181,10 +1943,7 @@ const Sirkey = (() => {
       this.regionAutoManager.ai.setScene(scene);
       const newConfig = ConfigBuilder.build(config,this);
       
-      // 核心增强：触发后台静默预检
-      if (config.proxies && Array.isArray(config.proxies)) {
-        this.backgroundProbe.trigger(config.proxies);
-      }
+      // 后台预检已删除（v5.0-optimized）
       
       return newConfig;
     }
@@ -2233,92 +1992,6 @@ const Sirkey = (() => {
       };
       
       return [...rules].sort((a, b) => getPriority(a) - getPriority(b));
-    }
-  }
-
-  /**
-   * 安全验证器 - 验证和清理所有外部输入
-   */
-  class SecurityValidator {
-    /**
-     * 验证函数是否安全可执行（简化版：单一黑名单）
-     */
-    static validateFunction(funcStr) {
-      if (typeof funcStr !== 'string') return false;
-      
-      // 黑名单：检查危险模式
-      if (CONSTANTS.RE.DANGEROUS_PATTERNS.test(funcStr)) {
-        Logger.warn("Security", `检测到危险函数模式: ${funcStr.substring(0, 50)}...`);
-        return false;
-      }
-      
-      // 简单检查：必须包含安全的函数调用
-      const hasSafePattern = /URLS|ICONS|ICON_VAL|DNSPolicyManager/.test(funcStr);
-      if (!hasSafePattern) {
-        Logger.warn("Security", `函数不包含安全模式: ${funcStr.substring(0, 50)}...`);
-        return false;
-      }
-      
-      return true;
-    }
-
-    /**
-     * 验证规则提供者配置
-     */
-    static validateRuleProvider(provider) {
-      if (!provider || typeof provider !== 'object') return false;
-      if (!provider.url || !provider.path) {
-        Logger.warn("Security", `规则提供者缺少必需字段: url=${provider.url}, path=${provider.path}`);
-        return false;
-      }
-      return true;
-    }
-
-    /**
-     * 增强 URL 验证，防止 SSRF（保留有价值的部分）
-     */
-    static sanitizeUrl(url) {
-      if (typeof url !== 'string') return null;
-      
-      try {
-        const urlObj = new URL(url);
-        
-        // 只允许 HTTP 和 HTTPS 协议
-        if (!['http:', 'https:'].includes(urlObj.protocol)) {
-          Logger.warn("Security", `不安全的协议: ${urlObj.protocol}`);
-          return null;
-        }
-        
-        // 检查私有 IP 地址
-        if (Utils.isPrivateIP(urlObj.hostname)) {
-          Logger.warn("Security", `私有 IP 地址: ${urlObj.hostname}`);
-          return null;
-        }
-        
-        // 检查 localhost 和特殊地址
-        const hostname = urlObj.hostname.toLowerCase();
-        const dangerousHosts = [
-          'localhost', '127.0.0.1', '0.0.0.0', '::1',
-          '169.254.169.254', // AWS/Azure metadata
-          'metadata.google.internal' // GCP metadata
-        ];
-        
-        if (dangerousHosts.includes(hostname)) {
-          Logger.warn("Security", `危险的主机名: ${hostname}`);
-          return null;
-        }
-        
-        // 检查内网域名
-        if (hostname.endsWith('.local') || hostname.endsWith('.internal')) {
-          Logger.warn("Security", `内网域名: ${hostname}`);
-          return null;
-        }
-        
-        return urlObj.toString();
-      } catch (e) {
-        Logger.warn("Security", `无效的 URL: ${url}`);
-        return null;
-      }
     }
   }
 
@@ -2407,10 +2080,10 @@ const Sirkey = (() => {
           }
         }
       }
-      // 使用 SecurityValidator 验证规则提供者
+      // 验证规则提供者
       if(cfg["rule-providers"] && typeof cfg["rule-providers"]==="object"){
         for(const [n,p] of Object.entries(cfg["rule-providers"])){
-          if(!SecurityValidator.validateRuleProvider(p)){
+          if(!p || typeof p !== 'object' || !p.url || !p.path){
             Logger.warn("Config.Audit",`移除无效规则提供者: ${n}`);
             delete cfg["rule-providers"][n];
           }
@@ -2446,8 +2119,8 @@ const Sirkey = (() => {
             for(const k in obj){
               if(typeof obj[k]==="function"){
                 const fStr=obj[k].toString();
-                // 使用 SecurityValidator 进行安全验证
-                if(!SecurityValidator.validateFunction(fStr)){
+                // 简单安全检查
+                if(typeof fStr !== 'string' || CONSTANTS.RE.DANGEROUS_PATTERNS.test(fStr)){
                   Logger.warn("Config.Security",`拒绝执行不安全的函数: ${k}`);
                   delete obj[k];
                   continue;
@@ -2606,7 +2279,12 @@ const Sirkey = (() => {
 
     static _buildRules(cfg,regionNames,context){
       const ruleProviders={}, rules=[];
-      const baseRP={type:"http",interval:Config.common?.ruleProvider?.interval??86400,format:"text",proxy:"自动优选"};
+      const baseRP={
+        type:"http",
+        interval:Config.common?.ruleProvider?.interval??86400,
+        format:"yaml",  // ✅ 大多数规则集是 yaml 格式
+        proxy:""  // ✅ 不使用代理，避免循环依赖
+      };
       const opts=Config.ruleOptions||{};
       
       // 1. 添加 LAN 和私有网络规则（最高优先级）
@@ -2615,31 +2293,85 @@ const Sirkey = (() => {
       
       // 2. 添加 REJECT 规则（广告、追踪器）
       if(opts.acl4ssr!==false && !ruleProviders.acl4ssr_ban){
-        ruleProviders.acl4ssr_ban={...baseRP,behavior:"classical",url:URLS.rulesets.acl4ssr.ban(),path:"./ruleset/acl4ssr_ban.list"};
+        ruleProviders.acl4ssr_ban={
+          type:"http",
+          interval:86400,
+          behavior:"classical",
+          format:"text",  // ✅ Classical 格式
+          url:URLS.rulesets.acl4ssr.ban(),
+          path:"./ruleset/acl4ssr_ban.list",
+          proxy:""  // ✅ 直连
+        };
         rules.push("RULE-SET,acl4ssr_ban,REJECT");
+        Logger.info("RuleProvider", `acl4ssr_ban: format=text, behavior=classical`);
       }
       if(opts.anti_ad!==false && !ruleProviders.anti_ad){
-        ruleProviders.anti_ad={...baseRP,behavior:"domain",format:"yaml",url:URLS.rulesets.anti_ad(),path:"./ruleset/anti_ad.yaml"};
+        ruleProviders.anti_ad={
+          type:"http",
+          interval:86400,
+          behavior:"domain",
+          format:"yaml",  // ✅ YAML 格式
+          url:URLS.rulesets.anti_ad(),
+          path:"./ruleset/anti_ad.yaml",
+          proxy:""  // ✅ 直连
+        };
         rules.push("RULE-SET,anti_ad,REJECT");
+        Logger.info("RuleProvider", `anti_ad: format=yaml, behavior=domain`);
       }
       if(opts.loyalsoldier!==false && !ruleProviders.ls_reject){
-        ruleProviders.ls_reject={...baseRP,behavior:"classical",url:URLS.rulesets.loyalsoldier.reject(),path:"./ruleset/ls_reject.list"};
+        ruleProviders.ls_reject={
+          type:"http",
+          interval:86400,
+          behavior:"classical",
+          format:"text",  // ✅ Classical 格式
+          url:URLS.rulesets.loyalsoldier.reject(),
+          path:"./ruleset/ls_reject.list",
+          proxy:""  // ✅ 直连
+        };
         rules.push("RULE-SET,ls_reject,REJECT");
+        Logger.info("RuleProvider", `ls_reject: format=text, behavior=classical`);
       }
       
       // 2.1 添加 Blackmatrix7 规则集（广告、隐私、劫持）
       if(opts.blackmatrix7!==false){
         if(!ruleProviders.bm7_advertising){
-          ruleProviders.bm7_advertising={...baseRP,behavior:"domain",format:"yaml",url:URLS.rulesets.blackmatrix7.advertising(),path:"./ruleset/bm7_advertising.yaml"};
+          ruleProviders.bm7_advertising={
+            type:"http",
+            interval:86400,
+            behavior:"domain",
+            format:"yaml",  // ✅ YAML 格式
+            url:URLS.rulesets.blackmatrix7.advertising(),
+            path:"./ruleset/bm7_advertising.yaml",
+            proxy:""  // ✅ 直连
+          };
           rules.push("RULE-SET,bm7_advertising,REJECT");
+          Logger.info("RuleProvider", `bm7_advertising: format=yaml, behavior=domain`);
         }
         if(!ruleProviders.bm7_privacy){
-          ruleProviders.bm7_privacy={...baseRP,behavior:"domain",format:"yaml",url:URLS.rulesets.blackmatrix7.privacy(),path:"./ruleset/bm7_privacy.yaml"};
+          ruleProviders.bm7_privacy={
+            type:"http",
+            interval:86400,
+            behavior:"domain",
+            format:"yaml",  // ✅ YAML 格式
+            url:URLS.rulesets.blackmatrix7.privacy(),
+            path:"./ruleset/bm7_privacy.yaml",
+            proxy:""  // ✅ 直连
+          };
           rules.push("RULE-SET,bm7_privacy,REJECT");
+          Logger.info("RuleProvider", `bm7_privacy: format=yaml, behavior=domain`);
         }
         if(!ruleProviders.bm7_hijacking){
-          ruleProviders.bm7_hijacking={...baseRP,behavior:"domain",format:"yaml",url:URLS.rulesets.blackmatrix7.hijacking(),path:"./ruleset/bm7_hijacking.yaml"};
+          ruleProviders.bm7_hijacking={
+            type:"http",
+            interval:86400,
+            behavior:"domain",
+            format:"yaml",  // ✅ YAML 格式
+            url:URLS.rulesets.blackmatrix7.hijacking(),
+            path:"./ruleset/bm7_hijacking.yaml",
+            proxy:""  // ✅ 直连
+          };
           rules.push("RULE-SET,bm7_hijacking,REJECT");
+          Logger.info("RuleProvider", `bm7_hijacking: format=yaml, behavior=domain`);
         }
       }
       
@@ -2689,7 +2421,18 @@ const Sirkey = (() => {
             return;
           }
           const isMrs=url.endsWith(".mrs");
-          ruleProviders[rp.name]={...baseRP,behavior:rp.behavior||"domain",format:isMrs?"mrs":(rp.format||"yaml"),url,path:`./ruleset/${rp.name}.${isMrs?"mrs":(rp.format||"yaml")}`};
+          const format = isMrs ? "mrs" : (rp.format || "yaml");
+          const behavior = rp.behavior || "domain";
+          ruleProviders[rp.name]={
+            type:"http",
+            interval:86400,
+            behavior:behavior,
+            format:format,  // ✅ 显式指定格式
+            url:url,
+            path:`./ruleset/${rp.name}.${format}`,
+            proxy:""  // ✅ 直连
+          };
+          Logger.info("RuleProvider", `${rp.name}: format=${format}, behavior=${behavior}`);
         }
       });
       
@@ -2712,20 +2455,22 @@ const Sirkey = (() => {
         ];
         bm7Services.forEach(svc=>{
           if(!ruleProviders[svc.name]){
-            ruleProviders[svc.name]={...baseRP,behavior:"domain",format:"yaml",url:svc.url,path:`./ruleset/${svc.name}.yaml`};
+            ruleProviders[svc.name]={...baseRP,behavior:"domain",format:"yaml",url:svc.url,path:`./ruleset/${svc.name}.yaml`,proxy:""};
             rules.push(`RULE-SET,${svc.name},${svc.target}`);
+            Logger.info("RuleProvider", `${svc.name}: format=yaml, behavior=domain`);
           }
         });
       }
       
       // 5. 添加国内路由规则（确保在国外代理规则之前）
       const coreSets={
-        applications:{behavior:"classical",url:URLS.rulesets.applications()},
-        acl4ssr_china:{behavior:"domain",url:URLS.rulesets.acl4ssr.china()},
-        ls_cn:{behavior:"domain",url:URLS.rulesets.loyalsoldier.cn()}
+        applications:{behavior:"classical",format:"text",url:URLS.rulesets.applications()},
+        acl4ssr_china:{behavior:"domain",format:"text",url:URLS.rulesets.acl4ssr.china()},
+        ls_cn:{behavior:"domain",format:"text",url:URLS.rulesets.loyalsoldier.cn()}
       };
       Object.entries(coreSets).forEach(([name,meta])=>{
-        ruleProviders[name]={...baseRP,...meta,path:`./ruleset/${name}.list`};
+        ruleProviders[name]={...baseRP,...meta,path:`./ruleset/${name}.list`,proxy:""};
+        Logger.info("RuleProvider", `${name}: format=${meta.format}, behavior=${meta.behavior}`);
       });
       
       // 添加国内路由规则
