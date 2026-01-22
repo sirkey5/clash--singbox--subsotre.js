@@ -293,14 +293,14 @@ const Sirkey = (() => {
       return this._getMirrorUrl(baseUrl);
     },
     rulesets:{
+      // ✅ 全量规则集：使用 geolocation-!cn（包含所有非中国域名）
+      geolocation_not_cn:()=>URLS.mrs("geolocation-!cn"),
+      
+      // 保留常用的单独服务规则集（可选）
       ai:()=>URLS.mrs("category-ai-!cn"),
       ads:()=>URLS.mrs("category-ads-all"),
       trackers:()=>URLS.mrs("tracker"),
       applications:()=>URLS.list("applications"),
-      claude:()=>URLS.mrs("anthropic"),
-      gemini:()=>URLS.mrs("google"),
-      youtube:()=>URLS.mrs("youtube"),
-      netflix:()=>URLS.mrs("netflix"),
       disney:()=>URLS.mrs("disney"),
       spotify:()=>URLS.mrs("spotify"),
       streaming:()=>URLS.mrs("category-streaming"),
@@ -315,38 +315,19 @@ const Sirkey = (() => {
       microsoft:()=>URLS.mrs("microsoft"),
       apple:()=>URLS.mrs("apple"),
       scholar:()=>URLS.mrs("category-scholar-!cn"),
-      proxy:()=>URLS.mrs("proxy"),
-      gfw:()=>URLS.mrs("gfw"),
       
       loyalsoldier:{
         reject:()=>URLS.list("reject"),
         icloud:()=>URLS.list("icloud"),
         apple:()=>URLS.list("apple"),
         google:()=>URLS.list("google"),
-        proxy:()=>URLS.list("proxy"),
         direct:()=>URLS.list("direct"),
         private:()=>URLS.list("private"),
-        gfw:()=>URLS.list("gfw"),
-        greatfire:()=>URLS.list("greatfire"),
-        tld_not_cn:()=>URLS.list("tld-not-cn"),
         telegram:()=>URLS.list("telegram"),
         cn:()=>URLS.list("direct")
       },
       
       blackmatrix7:{
-        openai:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OpenAI/OpenAI.yaml"),
-        claude:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Claude/Claude.yaml"),
-        gemini:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Gemini/Gemini.yaml"),
-        youtube:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/YouTube/YouTube.yaml"),
-        netflix:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Netflix/Netflix.yaml"),
-        disney:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Disney/Disney.yaml"),
-        spotify:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Spotify/Spotify.yaml"),
-        tiktok:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/TikTok/TikTok.yaml"),
-        telegram:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Telegram/Telegram.yaml"),
-        github:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/GitHub/GitHub.yaml"),
-        google:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Google/Google.yaml"),
-        microsoft:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Microsoft/Microsoft.yaml"),
-        apple:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Apple/Apple.yaml"),
         advertising:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Advertising/Advertising.yaml"),
         privacy:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Privacy/Privacy.yaml"),
         hijacking:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Hijacking/Hijacking.yaml")
@@ -354,7 +335,9 @@ const Sirkey = (() => {
       
       acl4ssr:{
         ban:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanAD.list"),
+        banprogramad:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanProgramAD.list"),
         china:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaDomain.list"),
+        chinacompanyip:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ChinaCompanyIp.list"),
         lan:()=>URLS._getMirrorUrl("https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.list")
       },
       
@@ -385,7 +368,7 @@ const Sirkey = (() => {
     ruleOptions:{
       autoDiscover:true,
       defaults:Object.fromEntries(
-        ["apple","microsoft","github","google","openai","spotify","youtube","bahamut","netflix","tiktok","disney","pixiv","hbo","biliintl","tvb","hulu","primevideo","telegram","line","whatsapp","games","japan","tracker","ads","acl4ssr","anti_ad","loyalsoldier","blackmatrix7"]
+        ["apple","microsoft","github","google","openai","spotify","bahamut","disney","pixiv","hbo","biliintl","tvb","hulu","primevideo","telegram","line","whatsapp","games","japan","tracker","ads","acl4ssr","anti_ad","loyalsoldier","blackmatrix7","geolocation_not_cn"]
           .map(k=>[k,true])
       )
     },
@@ -429,10 +412,6 @@ const Sirkey = (() => {
     services: [
       { id:"applications", rule:["RULE-SET,applications,下载软件"], name:"应用程序", icon:ICONS.Download, ruleProvider:{ name:"applications", url:()=>URLS.rulesets.applications(), behavior:"classical" } },
       { id:"openai",  rule:["RULE-SET,ai,国外AI","RULE-SET,ai,国外AI"], name:"国外AI", icon:ICONS.ChatGPT, ruleProvider:{ name:"ai", url:()=>URLS.rulesets.ai(), behavior:"domain" } },
-      { id:"claude",  rule:["RULE-SET,claude,Claude"], name:"Claude", icon:ICONS.Claude, ruleProvider:{ name:"claude", url:()=>URLS.rulesets.claude(), behavior:"domain" } },
-      { id:"gemini",  rule:["RULE-SET,gemini,Gemini"], name:"Gemini", icon:ICONS.Gemini, ruleProvider:{ name:"gemini", url:()=>URLS.rulesets.gemini(), behavior:"domain" } },
-      { id:"youtube", rule:["RULE-SET,youtube,YouTube"], name:"YouTube", icon:ICONS.YouTube, ruleProvider:{ name:"youtube", url:()=>URLS.rulesets.youtube(), behavior:"domain" } },
-      { id:"netflix", rule:["RULE-SET,netflix,NETFLIX"], name:"NETFLIX", icon:ICONS.Netflix, ruleProvider:{ name:"netflix", url:()=>URLS.rulesets.netflix(), behavior:"domain" } },
       { id:"disney",  rule:["RULE-SET,disney,Disney+"], name:"Disney+", icon:ICONS.DisneyPlus, ruleProvider:{ name:"disney", url:()=>URLS.rulesets.disney(), behavior:"domain" } },
       { id:"primevideo", rule:["GEOSITE,primevideo,Prime Video"], name:"Prime Video", icon:ICONS.PrimeVideo },
       { id:"hbo",     rule:["GEOSITE,hbo,HBO"], name:"HBO", icon:ICONS.HBO },
@@ -459,14 +438,13 @@ const Sirkey = (() => {
       { id:"microsoft",rule:["RULE-SET,microsoft,微软服务"], name:"微软服务", icon:ICONS.Microsoft, ruleProvider:{ name:"microsoft", url:()=>URLS.rulesets.microsoft(), behavior:"domain" } },
       { id:"apple",    rule:["RULE-SET,apple,苹果服务"], name:"苹果服务", icon:ICONS.Apple2, ruleProvider:{ name:"apple", url:()=>URLS.rulesets.apple(), behavior:"domain" } },
       { id:"scholar",  rule:["RULE-SET,scholar,学术网站"], name:"学术网站", icon:ICONS.Book, ruleProvider:{ name:"scholar", url:()=>URLS.rulesets.scholar(), behavior:"domain" } },
-      { id:"proxy",    rule:["RULE-SET,proxy,全球加速"], name:"全球加速", icon:ICONS.Proxy, ruleProvider:{ name:"proxy", url:()=>URLS.rulesets.proxy(), behavior:"domain" } },
-      { id:"gfw",      rule:["RULE-SET,gfw,GFW列表"], name:"GFW列表", icon:ICONS.Firewall, ruleProvider:{ name:"gfw", url:()=>URLS.rulesets.gfw(), behavior:"domain" } },
+      { id:"geolocation_not_cn", rule:["RULE-SET,geolocation_not_cn,全球站点"], name:"全球站点（全量）", icon:ICONS.WorldMap, ruleProvider:{ name:"geolocation_not_cn", url:()=>URLS.rulesets.geolocation_not_cn(), behavior:"domain" } },
       { id:"tracker",  rule:["GEOSITE,tracker,REJECT"], name:"跟踪分析", icon:ICONS.Reject, proxies:["REJECT","DIRECT","手动选择"] },
       { id:"ads",      rule:["RULE-SET,ads,REJECT"], name:"广告过滤", icon:ICONS.Advertising, proxies:["REJECT","DIRECT","手动选择"], ruleProvider:{ name:"ads", url:()=>URLS.rulesets.ads(), behavior:"domain" } }
     ],
     functionalGroups: [
-      { id:"ai_group", name:"AI组", icon:ICONS.ChatGPT, services:["openai","claude","gemini"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
-      { id:"streaming_group", name:"流媒体组", icon:ICONS.StreamingNotCN, services:["youtube","netflix","disney","hbo","hulu","primevideo","tiktok","biliintl","bahamut","tvb","pixiv","streaming"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"ai_group", name:"AI组", icon:ICONS.ChatGPT, services:["openai"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
+      { id:"streaming_group", name:"流媒体组", icon:ICONS.StreamingNotCN, services:["disney","hbo","hulu","primevideo","tiktok","biliintl","bahamut","tvb","pixiv","streaming"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
       { id:"finance_group", name:"金融组", icon:ICONS.Premium, services:["finance"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
       { id:"gaming_group", name:"游戏组", icon:ICONS.Game, services:["steam","epic","games"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
       { id:"download_group", name:"下载组", icon:ICONS.Download, services:["speedtest"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
@@ -476,7 +454,7 @@ const Sirkey = (() => {
       { id:"dev_group", name:"开发组", icon:ICONS.GitHub, services:["github","scholar"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
       { id:"email_group", name:"邮件组", icon:ICONS.Microsoft, services:["microsoft","apple"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
       { id:"music_group", name:"音乐组", icon:ICONS.Spotify, services:["spotify"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] },
-      { id:"browsing_group", name:"浏览组", icon:ICONS.Proxy, services:["proxy","gfw"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] }
+      { id:"browsing_group", name:"浏览组", icon:ICONS.Proxy, services:["geolocation_not_cn"], proxiesOrder:["手动选择","自动选择","智能优选","DIRECT"] }
     ],
     system:{
       "allow-lan":true, mode:"rule", "unified-delay":true, "tcp-concurrent":true, "geodata-mode":true,
@@ -2436,22 +2414,12 @@ const Sirkey = (() => {
         }
       });
       
-      // 4.1 添加 Blackmatrix7 规则集（特定服务）
+      // 4.1 添加 Blackmatrix7 规则集（仅保留广告/隐私/劫持）
       if(opts.blackmatrix7!==false){
         const bm7Services = [
-          {name:"bm7_openai", url:URLS.rulesets.blackmatrix7.openai(), target:"AI组"},
-          {name:"bm7_claude", url:URLS.rulesets.blackmatrix7.claude(), target:"AI组"},
-          {name:"bm7_gemini", url:URLS.rulesets.blackmatrix7.gemini(), target:"AI组"},
-          {name:"bm7_youtube", url:URLS.rulesets.blackmatrix7.youtube(), target:"流媒体组"},
-          {name:"bm7_netflix", url:URLS.rulesets.blackmatrix7.netflix(), target:"流媒体组"},
-          {name:"bm7_disney", url:URLS.rulesets.blackmatrix7.disney(), target:"流媒体组"},
-          {name:"bm7_spotify", url:URLS.rulesets.blackmatrix7.spotify(), target:"音乐组"},
-          {name:"bm7_tiktok", url:URLS.rulesets.blackmatrix7.tiktok(), target:"流媒体组"},
-          {name:"bm7_telegram", url:URLS.rulesets.blackmatrix7.telegram(), target:"社交组"},
-          {name:"bm7_github", url:URLS.rulesets.blackmatrix7.github(), target:"开发组"},
-          {name:"bm7_google", url:URLS.rulesets.blackmatrix7.google(), target:"搜索组"},
-          {name:"bm7_microsoft", url:URLS.rulesets.blackmatrix7.microsoft(), target:"邮件组"},
-          {name:"bm7_apple", url:URLS.rulesets.blackmatrix7.apple(), target:"邮件组"}
+          {name:"bm7_advertising", url:URLS.rulesets.blackmatrix7.advertising(), target:"REJECT"},
+          {name:"bm7_privacy", url:URLS.rulesets.blackmatrix7.privacy(), target:"REJECT"},
+          {name:"bm7_hijacking", url:URLS.rulesets.blackmatrix7.hijacking(), target:"REJECT"}
         ];
         bm7Services.forEach(svc=>{
           if(!ruleProviders[svc.name]){
