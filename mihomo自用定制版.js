@@ -478,7 +478,7 @@ const Sirkey = (() => {
         maxFailedTimes: 3  // 🔧 新增：默认故障检测阈值
       }, 
       defaultProxyGroups:[{ name:"国内网站", icon:ICONS.StreamingCN, proxies:["DIRECT","手动选择"] }], 
-      postRules:["GEOSITE,private,DIRECT","GEOIP,private,DIRECT,no-resolve","RULE-SET,ls_cn,国内网站","RULE-SET,acl4ssr_china,国内网站","GEOSITE,cn,国内网站","GEOIP,cn,国内网站,no-resolve","MATCH,其他节点"] 
+      postRules:["GEOSITE,private,DIRECT","GEOIP,private,DIRECT,no-resolve","RULE-SET,ls_cn,国内网站","RULE-SET,acl4ssr_china,国内网站","GEOSITE,cn,国内网站","GEOIP,cn,国内网站,no-resolve","MATCH,手动选择"] 
     },
     failureDetection: {
       gaming: { maxFailedTimes: 1, interval: 120, tolerance: 20, timeout: 2500 },      // ✅ 游戏最严格：1次失败即切换
@@ -1395,8 +1395,16 @@ const Sirkey = (() => {
   }
 
   /* ========== 全局持久化存储 (跨配置刷新保留) ========== */
-  if (typeof root.__MIHOMO_STATS__ === "undefined") {
-    root.__MIHOMO_STATS__ = {
+  
+  /**
+   * 使用 Symbol 来隔离全局状态，避免命名空间污染
+   * Symbol.for() 创建全局 symbol 注册表条目，允许跨实例访问同一状态
+   * 但 Symbol 键不会出现在 Object.keys() 或 for...in 循环中，提供更好的封装性
+   */
+  const STATS_SYMBOL = Symbol.for('__MIHOMO_STATS__');
+  
+  if (typeof root[STATS_SYMBOL] === "undefined") {
+    root[STATS_SYMBOL] = {
       nodes: new Map(), // key: nodeHash, value: { failCount: 0, successCount: 0, lastSeen: Date.now(), scoreOffset: 0 }
       asns: new Map(),  // key: asn, value: count
       lastRun: Date.now(),
@@ -1404,7 +1412,7 @@ const Sirkey = (() => {
       checkInProgress: false
     };
   }
-  const GLOBAL_STATS = root.__MIHOMO_STATS__;
+  const GLOBAL_STATS = root[STATS_SYMBOL];
 
   /* ========== 8. 节点状态管理器 (Status Manager) ========== */
   class NodeStatsManager {
@@ -1796,27 +1804,32 @@ const Sirkey = (() => {
         icon: ICON_VAL(ICONS.Premium)
       };
 
-      // 4. 自动选择组（url-test，不添加故障转移）
+      // 4. 自动选择组（url-test，稳定优先配置）
       const autoSelectionGroup = {
         ...base,
         name: "自动选择",
         type: "url-test",
         "include-all": true,
-        tolerance: 50,
-        "max-failed-times": 3,
+        tolerance: 100,              // 🔧 100ms 容差，平衡稳定性和响应速度
+        "max-failed-times": 3,       // ✅ 3次失败才标记为不可用
         "expected-status": "204",
-        lazy: false,
-        interval: 300,
-        timeout: 5000,
+        lazy: false,                 // ✅ 主动检测，确保状态始终最新
+        interval: 180,               // 🔧 3分钟检测一次，稳定优先
+        timeout: 5000,               // ✅ 5秒超时，给节点足够响应时间
         icon: ICON_VAL(ICONS.Proxy)
       };
       
-      // 5. 故障转移组（fallback）- 全局故障转移，排在倒数第三
+      // 5. 故障转移组（fallback）- 包含所有物理节点，全局故障转移，排在倒数第三
+      const allPhysicalNodes = list.filter(p => {
+        const name = String(p.name || "").toUpperCase();
+        return !["DIRECT", "REJECT"].includes(name);
+      }).map(p => p.name || p);
+
       const failoverGroup = {
         ...base,
         name: "故障转移",
         type: "fallback",
-        proxies: bestIds.length ? bestIds : ["DIRECT"],
+        proxies: allPhysicalNodes.length ? allPhysicalNodes : ["DIRECT"],
         "include-all": false,
         "max-failed-times": 3,
         "expected-status": "204",
@@ -1827,14 +1840,14 @@ const Sirkey = (() => {
       
       // 🔧 新增：记录故障检测配置
       Logger.info("FailureDetection", `自动选择组配置: max-failed-times=${autoSelectionGroup["max-failed-times"]}, tolerance=${autoSelectionGroup.tolerance}ms, interval=${autoSelectionGroup.interval}s, timeout=${autoSelectionGroup.timeout}ms`);
-      Logger.info("FailureDetection", `故障转移组配置: type=fallback, max-failed-times=3, interval=300s, timeout=5000ms`);
+      Logger.info("FailureDetection", `故障转移组配置: type=fallback, 包含${allPhysicalNodes.length}个物理节点, max-failed-times=3, interval=300s, timeout=5000ms`);
 
-      // 6. 其他节点组
+      // 6. 其他节点组（兜底组，包含所有未被其他组包含的节点）
       const otherGroup={
         ...base,
         name:"其他节点",
         type:"select",
-        proxies:["故障转移", "手动选择", "自动选择", "智能优选", "DIRECT"],
+        proxies:["手动选择", "自动选择", "智能优选", "DIRECT"],
         "include-all":true,
         "exclude-filter":excludeFilter,
         icon:ICON_VAL(ICONS.WorldMap)
@@ -2145,12 +2158,15 @@ const Sirkey = (() => {
             selectedNodes = functionalMgr.selectNodesForGroup(fg.id, allProxies);
           }
           
-          // 1.1 创建功能组（select）- 引用全局故障转移组
+          // 1.1 创建功能组（select）- 只引用核心组，不引用地理组
           const customOrder = Array.isArray(fg.proxiesOrder) ? fg.proxiesOrder : [];
-          const proxies = ["手动选择", "自动选择", "智能优选", ...customOrder.filter(p => p !== "手动选择" && p !== "自动选择" && p !== "智能优选")];
+          const coreGroups = ["手动选择", "自动选择", "智能优选", "DIRECT"];
           
-          // 添加全局故障转移组到第一位
-          const allOptions = Utils.unique(["故障转移", ...proxies, ...regionNames]);
+          // 合并自定义顺序和核心组，过滤掉地理组引用
+          const allOptions = Utils.unique([
+            ...coreGroups,
+            ...customOrder.filter(p => !coreGroups.includes(p) && !regionNames.includes(p))
+          ]);
           
           groups.push({
             ...base, 
@@ -2277,7 +2293,7 @@ const Sirkey = (() => {
           behavior:"classical",
           format:"text",  // ✅ Classical 格式
           url:URLS.rulesets.loyalsoldier.reject(),
-          path:"./ruleset/ls_reject.list",
+          path:"./ruleset/ls_reject.txt",  // 🔧 修复：Loyalsoldier 使用 .txt 扩展名
           proxy:""  // ✅ 直连
         };
         rules.push("RULE-SET,ls_reject,REJECT");
@@ -2372,47 +2388,52 @@ const Sirkey = (() => {
             Logger.warn("RuleProvider", `规则提供者 ${rp.name} 缺少 URL`);
             return;
           }
-          const isMrs=url.endsWith(".mrs");
-          const format = isMrs ? "mrs" : (rp.format || "yaml");
-          const behavior = rp.behavior || "domain";
+          
+          // 🔧 修复：根据 URL 扩展名自动判断格式和文件扩展名
+          let format, behavior, ext;
+          if(url.endsWith(".mrs")){
+            format = "mrs";
+            behavior = "domain";  // MRS 文件必须是 domain 类型
+            ext = "mrs";
+          } else if(url.endsWith(".yaml")){
+            format = "yaml";
+            behavior = rp.behavior || "domain";
+            ext = "yaml";
+          } else if(url.endsWith(".list")){
+            format = "text";
+            behavior = rp.behavior || "classical";
+            ext = "list";
+          } else {
+            // .txt 或其他文本文件
+            format = "text";
+            behavior = rp.behavior || "classical";
+            ext = "txt";
+          }
+          
           ruleProviders[rp.name]={
             type:"http",
             interval:86400,
             behavior:behavior,
-            format:format,  // ✅ 显式指定格式
+            format:format,
             url:url,
-            path:`./ruleset/${rp.name}.${format}`,
-            proxy:""  // ✅ 直连
+            path:`./ruleset/${rp.name}.${ext}`,  // 🔧 修复：使用正确的文件扩展名
+            proxy:""
           };
-          Logger.info("RuleProvider", `${rp.name}: format=${format}, behavior=${behavior}`);
+          Logger.info("RuleProvider", `${rp.name}: format=${format}, behavior=${behavior}, ext=${ext}`);
         }
       });
       
-      // 4.1 添加 Blackmatrix7 规则集（仅保留广告/隐私/劫持）
-      if(opts.blackmatrix7!==false){
-        const bm7Services = [
-          {name:"bm7_advertising", url:URLS.rulesets.blackmatrix7.advertising(), target:"REJECT"},
-          {name:"bm7_privacy", url:URLS.rulesets.blackmatrix7.privacy(), target:"REJECT"},
-          {name:"bm7_hijacking", url:URLS.rulesets.blackmatrix7.hijacking(), target:"REJECT"}
-        ];
-        bm7Services.forEach(svc=>{
-          if(!ruleProviders[svc.name]){
-            ruleProviders[svc.name]={...baseRP,behavior:"domain",format:"yaml",url:svc.url,path:`./ruleset/${svc.name}.yaml`,proxy:""};
-            rules.push(`RULE-SET,${svc.name},${svc.target}`);
-            Logger.info("RuleProvider", `${svc.name}: format=yaml, behavior=domain`);
-          }
-        });
-      }
+      // 🔧 修复：移除重复的 Blackmatrix7 规则定义（已在第 2289-2337 行定义）
       
       // 5. 添加国内路由规则（确保在国外代理规则之前）
       const coreSets={
-        applications:{behavior:"classical",format:"text",url:URLS.rulesets.applications()},
-        acl4ssr_china:{behavior:"domain",format:"text",url:URLS.rulesets.acl4ssr.china()},
-        ls_cn:{behavior:"domain",format:"text",url:URLS.rulesets.loyalsoldier.cn()}
+        applications:{behavior:"classical",format:"text",url:URLS.rulesets.applications(),ext:"txt"},  // 🔧 修复：Loyalsoldier 使用 .txt
+        acl4ssr_china:{behavior:"classical",format:"text",url:URLS.rulesets.acl4ssr.china(),ext:"list"},  // 🔧 修复：behavior 应为 classical
+        ls_cn:{behavior:"classical",format:"text",url:URLS.rulesets.loyalsoldier.cn(),ext:"txt"}  // 🔧 修复：behavior 应为 classical，扩展名为 .txt
       };
       Object.entries(coreSets).forEach(([name,meta])=>{
-        ruleProviders[name]={...baseRP,...meta,path:`./ruleset/${name}.list`,proxy:""};
-        Logger.info("RuleProvider", `${name}: format=${meta.format}, behavior=${meta.behavior}`);
+        ruleProviders[name]={...baseRP,...meta,path:`./ruleset/${name}.${meta.ext}`,proxy:""};  // 🔧 修复：使用正确的文件扩展名
+        Logger.info("RuleProvider", `${name}: format=${meta.format}, behavior=${meta.behavior}, ext=${meta.ext}`);
       });
       
       // 添加国内路由规则
