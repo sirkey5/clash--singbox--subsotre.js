@@ -1927,54 +1927,45 @@ const Sirkey = (() => {
     }
   }
 
-  const ErrorConfigFactory = {
-    createErrorConfig(msg,opts={}){
-      const t=Date.now();
-      return {name:`⛔ 脚本错误: ${String(msg).slice(0,20)}...`,type:"direct",...opts,_error:true,_errorMessage:msg,_errorTimestamp:t,_scriptError:{timestamp:t,message:msg,fallback:true,version:"ultimate_optimized_v4.0"}};
-    }
-  };
+  function createErrorProxy(msg) {
+    const t = Date.now();
+    return {
+      name: `⛔ 脚本错误: ${String(msg).slice(0,20)}...`,
+      type: "direct",
+      _error: true,
+      _errorMessage: msg,
+      _errorTimestamp: t
+    };
+  }
 
   /* ========== 11. 配置生成引擎 (Config Builder) ========== */
   
   /**
-   * 规则排序管理器 - 按优先级对规则进行排序（简化版）
+   * 规则排序 - 按优先级对规则进行排序
    */
-  class RuleOrderManager {
-    /**
-     * 按优先级对规则进行排序
-     */
-    static prioritizeRules(rules) {
-      if (!Array.isArray(rules) || !rules.length) return rules || [];
+  function prioritizeRules(rules) {
+    if (!Array.isArray(rules) || !rules.length) return rules || [];
+    
+    const getPriority = (rule) => {
+      if (typeof rule !== 'string') return 999;
+      const ruleUpper = rule.toUpperCase();
       
-      // 优先级映射（内联）
-      const getPriority = (rule) => {
-        if (typeof rule !== 'string') return 999;
-        const ruleUpper = rule.toUpperCase();
-        
-        // 优先级 1: LAN 和私有网络
-        if (ruleUpper.startsWith('GEOSITE,PRIVATE') || ruleUpper.startsWith('GEOIP,PRIVATE')) return 1;
-        // 优先级 2: REJECT 规则
-        if (ruleUpper.includes('REJECT')) return 2;
-        // 优先级 3: 应用程序和进程
-        if (ruleUpper.startsWith('PROCESS-NAME') || ruleUpper.startsWith('RULE-SET,APPLICATIONS')) return 3;
-        // 优先级 4: 特定服务
-        if (ruleUpper.startsWith('RULE-SET,') || ruleUpper.startsWith('GEOSITE,')) return 4;
-        // 优先级 5: 国内路由
-        if (ruleUpper.includes('CHINA') || ruleUpper.includes(',CN')) return 5;
-        // 优先级 6: 国外代理
-        if (ruleUpper.includes('PROXY') || ruleUpper.includes('GFW')) return 6;
-        // 优先级 7: MATCH 兜底
-        if (ruleUpper.startsWith('MATCH')) return 7;
-        
-        return 4; // 默认优先级
-      };
+      if (ruleUpper.startsWith('GEOSITE,PRIVATE') || ruleUpper.startsWith('GEOIP,PRIVATE')) return 1;
+      if (ruleUpper.includes('REJECT')) return 2;
+      if (ruleUpper.startsWith('PROCESS-NAME') || ruleUpper.startsWith('RULE-SET,APPLICATIONS')) return 3;
+      if (ruleUpper.startsWith('RULE-SET,') || ruleUpper.startsWith('GEOSITE,')) return 4;
+      if (ruleUpper.includes('CHINA') || ruleUpper.includes(',CN')) return 5;
+      if (ruleUpper.includes('PROXY') || ruleUpper.includes('GFW')) return 6;
+      if (ruleUpper.startsWith('MATCH')) return 7;
       
-      return [...rules].sort((a, b) => getPriority(a) - getPriority(b));
-    }
+      return 4;
+    };
+    
+    return [...rules].sort((a, b) => getPriority(a) - getPriority(b));
   }
 
   /**
-   * DNS 策略构建（简化为函数）
+   * DNS 策略构建
    */
   function buildDNSPolicy() {
     return {
@@ -2001,7 +1992,6 @@ const Sirkey = (() => {
       if(baseConfig["proxy-groups"]) cfg["proxy-groups"] = Utils.deepClone(baseConfig["proxy-groups"],"proxy-groups");
       if(baseConfig.rules) cfg.rules=[...baseConfig.rules];
 
-      if(Config.adaptive && context) this._applyAdaptive(cfg,context);
       if(!this._validate(cfg)){
         if(Config.autoIntervention) this._selfHeal(cfg);
         else return cfg;
@@ -2010,25 +2000,24 @@ const Sirkey = (() => {
       this._mergeSystem(cfg);
       const {regions,regionProxyGroups,otherProxyNames} = this._discoverRegions(cfg,context);
       const regionGroupNames = this._regionGroupNames(regionProxyGroups);
-      this._ensureSystemProxies(cfg);
       cfg["proxy-groups"] = this._buildProxyGroups(cfg,regionGroupNames,regionProxyGroups,otherProxyNames,context);
       const {rules,ruleProviders} = this._buildRules(cfg,regionGroupNames,context);
       cfg.rules=rules; cfg["rule-providers"]=ruleProviders;
       if(Config.autoIntervention) this._finalAudit(cfg);
-      return cfg;
-    }
-
-    /**
-     * 场景自适应权重调整（简化版）
-     */
-    static _applyAdaptive(cfg,context){
-      // 简化：场景检测功能失效，直接使用默认场景
-      const scene = "browsing";
-      const opts=Config.aiOptions;
-      if(opts?.enable && opts.scenes?.[scene]){
-        Logger.info("Config.Adaptive",`场景: ${scene}, 调整权重`);
-        opts.scoring = {...opts.scoring,...opts.scenes[scene]};
+      
+      // 去除重复的代理节点
+      if(Array.isArray(cfg.proxies)){
+        const seen = new Set();
+        cfg.proxies = cfg.proxies.filter(p => {
+          if(!p?.name) return false;
+          const key = p.name.toUpperCase();
+          if(seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
       }
+      
+      return cfg;
     }
 
     /**
@@ -2129,10 +2118,6 @@ const Sirkey = (() => {
       try{return Utils.unique(groups.map(g=>g?.name).filter(Boolean));}catch(e){Logger.warn("Config.RegionNames",e.message||e);return[];}
     }
 
-    static _ensureSystemProxies(cfg){
-      if(!Array.isArray(cfg.proxies)) cfg.proxies = [];
-    }
-
     static _buildProxyGroups(cfg,regionNames,regionGroups,otherNames,context){
       const base=Utils.getProxyGroupBase();
       const groups=[];
@@ -2226,17 +2211,6 @@ const Sirkey = (() => {
       
       Logger.info("ProxyGroups", `构建完成: 共 ${groups.length} 个分组`);
       return groups;
-    }
-
-    static _sortRules(rules){
-      if(!Array.isArray(rules) || !rules.length) return rules || [];
-      const normal = [], matchRules = [];
-      for(const r of rules){
-        if(typeof r !== "string"){ normal.push(r); continue; }
-        const type = r.split(",")[0].trim().toUpperCase();
-        if(type === "MATCH") matchRules.push(r); else normal.push(r);
-      }
-      return [...normal, ...matchRules];
     }
 
     static _autoDiscoverRules(ruleProviders,rules,opts,baseRP){
@@ -2459,8 +2433,8 @@ const Sirkey = (() => {
         rules.push(...matchRules);
       }
       
-      // 使用规则排序管理器进行最终排序
-      const sorted = RuleOrderManager.prioritizeRules(rules);
+      // 使用规则排序进行最终排序
+      const sorted = prioritizeRules(rules);
       
       Logger.info("RuleBuilder", `构建完成: ${sorted.length} 条规则, ${Object.keys(ruleProviders).length} 个规则提供者`);
       
@@ -2493,7 +2467,7 @@ const Sirkey = (() => {
         const fallback = { ...config };
         if (!Array.isArray(fallback.proxies)) fallback.proxies = [];
         const msg = e?.message || "未知错误";
-        fallback.proxies.unshift(ErrorConfigFactory.createErrorConfig(msg));
+        fallback.proxies.unshift(createErrorProxy(msg));
         return fallback;
       } catch (err) {
         Logger.error("Main", "降级失败", err.message || err);
