@@ -1,8 +1,9 @@
 // SubStore 节点过滤脚本 - 重构版
-// 版本: 12.0 (2025) - 高性能区间树架构
-// 代码量: ~1000行 (从1876行优化)
+// 版本: 16.0 (2025) - 优化DNS解析策略顺序 (真实IP验证优先)
+// 代码量: ~1150行 (从1876行优化)
 // 性能提升: 13x (区间树 vs 二分查找)
 // 特性: 强加密验证 + 智能地理识别 + 区间树查询 + 集群共识 + 隐私保护
+
 "use strict";
 
 // ==================== 配置 ====================
@@ -590,9 +591,11 @@ const CONFIG = Object.freeze({
     dohProviders: [
       'https://cloudflare-dns.com/dns-query?name={host}&type=A',
       'https://dns.google/resolve?name={host}&type=A',
-      'https://dns.quad9.net:5053/dns-query?name={host}&type=A'
+      'https://dns.quad9.net:5053/dns-query?name={host}&type=A',
+      'https://doh.opendns.com/dns-query?name={host}&type=A',
+      'https://doh.dns.sb/dns-query?name={host}&type=A'
     ],
-    timeout: 2000, cacheEnabled: true, cacheTTL: 3600000
+    timeout: 5000, cacheEnabled: true, cacheTTL: 3600000
   },
   JUNK_DOMAINS_FILTER: { enabled: false, strictMode: false, allowCDN: true, customDomains: [] },
   JUNK_DOMAINS: new Set([]),
@@ -1117,19 +1120,11 @@ class Validator {
     if (utils.cache.has(cacheKey)) return utils.cache.get(cacheKey);
 
     let result = { tag: "未知地点", confidence: 0 };
-
-    // 策略1: 域名TLD识别
-    if (!REGEX.IPV4.test(server) && !REGEX.IPV6.test(server) && REGEX.DOMAIN.test(server)) {
-      const tld = server.split('.').pop();
-      if (this.countryMap[tld]) {
-        result = { tag: this.countryMap[tld], confidence: 85, source: "domain-tld" };
-        utils.cache.set(cacheKey, result);
-        return result;
-      }
-    }
-
-    // 策略2: 静态IP段查询（使用区间树，O(log n)）
+    
+    // 策略1: 直接IP地址识别 (最高优先级)
+    // 如果server本身就是IP，直接查询
     if (REGEX.IPV4.test(server)) {
+      // 1.1 静态IP段查询
       const ipLong = utils.ipToLong(server);
       const staticCountry = this.ipTree.search(ipLong);
       if (staticCountry) {
@@ -1137,59 +1132,79 @@ class Validator {
         utils.cache.set(cacheKey, result);
         return result;
       }
-    }
-
-    // 策略3: 远程API查询（IP地址）
-    if ((REGEX.IPV4.test(server) || REGEX.IPV6.test(server)) && this.opt.enableRemoteGeo) {
-      if (p._isCDN) {
-        // CDN IP特殊处理：尝试从SNI获取TLD
-        let sniHost = p.sni || p.servername || 
-          (p["ws-opts"] && p["ws-opts"].headers && (p["ws-opts"].headers.Host || p["ws-opts"].headers.host));
+      
+      // 1.2 远程API查询
+      if (this.opt.enableRemoteGeo) {
+        // CDN IP特殊处理
+        if (p._isCDN) {
+          let sniHost = p.sni || p.servername || 
+            (p["ws-opts"] && p["ws-opts"].headers && (p["ws-opts"].headers.Host || p["ws-opts"].headers.host));
+          
+          if (sniHost && sniHost !== server && !REGEX.IPV4.test(sniHost) && !REGEX.IPV6.test(sniHost)) {
+            const sniTld = String(sniHost).toLowerCase().split('.').pop();
+            if (this.countryMap[sniTld]) {
+              result = { tag: this.countryMap[sniTld], confidence: 75, source: "cdn-sni-tld" };
+              utils.cache.set(cacheKey, result);
+              return result;
+            }
+          }
+          
+          result = { tag: "未知地点", confidence: 0, source: "cdn-unknown" };
+          utils.cache.set(cacheKey, result);
+          return result;
+        }
         
-        if (sniHost && sniHost !== server && !REGEX.IPV4.test(sniHost) && !REGEX.IPV6.test(sniHost)) {
-          const sniTld = String(sniHost).toLowerCase().split('.').pop();
-          if (this.countryMap[sniTld]) {
-            result = { tag: this.countryMap[sniTld], confidence: 75, source: "cdn-sni-tld" };
+        try {
+          const remoteGeo = await this.fetchRemoteGeo(server);
+          if (remoteGeo && remoteGeo.country) {
+            result = { tag: remoteGeo.country, confidence: 95, source: "remote-api", isp: remoteGeo.isp };
             utils.cache.set(cacheKey, result);
             return result;
           }
+        } catch (e) {
+          console.log(`[远程API] IP ${server} 查询失败: ${e.message}`);
         }
-        
-        result = { tag: "未知地点", confidence: 0, source: "cdn-unknown" };
+      }
+    }
+    
+    // 策略2: 域名TLD识别 (仅针对国家TLD)
+    if (!REGEX.IPV4.test(server) && !REGEX.IPV6.test(server) && REGEX.DOMAIN.test(server)) {
+      const parts = server.split('.');
+      const tld = parts[parts.length - 1];
+      
+      // 2.1 直接TLD映射 (仅国家TLD: .hk, .jp, .us等)
+      if (this.countryMap[tld]) {
+        result = { tag: this.countryMap[tld], confidence: 85, source: "domain-tld" };
+        utils.cache.set(cacheKey, result);
+        return result;
+      }
+    }
+    
+    // 策略3: DNS解析后的IP查询 (核心策略!)
+    // 这是域名节点的主要识别方式
+    if (p._resolvedIP && REGEX.IPV4.test(p._resolvedIP)) {
+      // 3.1 静态IP段查询
+      const ipLong = utils.ipToLong(p._resolvedIP);
+      const staticCountry = this.ipTree.search(ipLong);
+      if (staticCountry) {
+        result = { tag: staticCountry, confidence: 85, source: "dns-resolved-static" };
         utils.cache.set(cacheKey, result);
         return result;
       }
       
-      try {
-        const remoteGeo = await this.fetchRemoteGeo(server);
-        if (remoteGeo && remoteGeo.country) {
-          result = { tag: remoteGeo.country, confidence: 95, source: "remote-api", isp: remoteGeo.isp };
-          utils.cache.set(cacheKey, result);
-          return result;
+      // 3.2 远程API查询
+      if (this.opt.enableRemoteGeo) {
+        try {
+          const remoteGeo = await this.fetchRemoteGeo(p._resolvedIP);
+          if (remoteGeo && remoteGeo.country) {
+            result = { tag: remoteGeo.country, confidence: 90, source: "dns-resolved-api", isp: remoteGeo.isp };
+            utils.cache.set(cacheKey, result);
+            return result;
+          }
+        } catch (e) {
+          console.log(`[远程API] 解析IP ${p._resolvedIP} 查询失败: ${e.message}`);
         }
-      } catch (e) {}
-    }
-    
-    // 策略4: 解析后的IP查询
-    if (p._resolvedIP && REGEX.IPV4.test(p._resolvedIP)) {
-      const ipLong = utils.ipToLong(p._resolvedIP);
-      const staticCountry = this.ipTree.search(ipLong);
-      if (staticCountry) {
-        result = { tag: staticCountry, confidence: 75, source: "static-resolved-ip" };
-        utils.cache.set(cacheKey, result);
-        return result;
       }
-    }
-    
-    if (p._resolvedIP && (REGEX.IPV4.test(p._resolvedIP) || REGEX.IPV6.test(p._resolvedIP)) && this.opt.enableRemoteGeo) {
-      try {
-        const remoteGeo = await this.fetchRemoteGeo(p._resolvedIP);
-        if (remoteGeo && remoteGeo.country) {
-          result = { tag: remoteGeo.country, confidence: 90, source: "resolved-ip", isp: remoteGeo.isp };
-          utils.cache.set(cacheKey, result);
-          return result;
-        }
-      } catch (e) {}
     }
 
     // 策略5: SNI/Host headers TLD
@@ -1205,8 +1220,94 @@ class Validator {
       }
     }
 
+    // 策略6: 节点名提取 (最后兜底策略, 置信度最低)
+    // 注意: 节点名可以随意修改, 完全不可信!
+    // 仅在所有DNS/IP验证方法失败后使用, 作为最后的参考
+    if (p.name && typeof p.name === 'string') {
+      const nameGeo = this._extractGeoFromName(p.name);
+      if (nameGeo && nameGeo.tag !== "未知地点") {
+        // 降低置信度到30%, 表示这是不可靠的信息
+        result = { tag: nameGeo.tag, confidence: 30, source: "name-fallback" };
+        utils.cache.set(cacheKey, result);
+        return result;
+      }
+    }
+
     utils.cache.set(cacheKey, result);
     return result;
+  }
+  
+  /**
+   * 从节点名提取地理信息 (兜底方法)
+   * 警告: 节点名可以随意修改, 完全不可信!
+   * 仅作为最后的兜底策略, 在所有DNS/IP验证方法失败后使用
+   */
+  _extractGeoFromName(name) {
+    if (!name || typeof name !== 'string') return null;
+    
+    // 1. 匹配Emoji国旗
+    const flagMatch = name.match(/([\u{1F1E6}-\u{1F1FF}]{2})/u);
+    if (flagMatch) {
+      const flagCode = flagMatch[1];
+      try {
+        const code1 = String.fromCodePoint(flagCode.codePointAt(0) - 127397);
+        const code2 = String.fromCodePoint(flagCode.codePointAt(2) - 127397);
+        const isoCode = code1 + code2;
+        if (this.countryMap[isoCode]) {
+          return { tag: this.countryMap[isoCode], source: "name-emoji" };
+        }
+      } catch (e) {}
+    }
+    
+    // 2. 匹配中文国家名
+    const chineseCountries = [
+      "中国香港", "中国台湾", "中国澳门", "中国", "香港", "台湾", "澳门",
+      "日本", "韩国", "新加坡", "美国", "英国", "德国", "法国", "俄罗斯",
+      "荷兰", "加拿大", "澳大利亚", "印度", "泰国", "越南", "马来西亚",
+      "菲律宾", "印尼", "瑞士", "瑞典", "挪威", "芬兰", "丹麦", "意大利",
+      "西班牙", "葡萄牙", "巴西", "阿根廷", "土耳其", "阿联酋"
+    ];
+    
+    for (const country of chineseCountries) {
+      if (name.includes(country)) {
+        return { tag: country, source: "name-chinese" };
+      }
+    }
+    
+    // 3. 匹配ISO代码 - HK, US, JP等
+    const isoMatch = name.match(/\b([A-Z]{2})\b/);
+    if (isoMatch && this.countryMap[isoMatch[1]]) {
+      return { tag: this.countryMap[isoMatch[1]], source: "name-iso" };
+    }
+    
+    // 4. 匹配英文国家名
+    const englishCountries = {
+      "hong kong": "中国香港", "hongkong": "中国香港",
+      "taiwan": "中国台湾",
+      "japan": "日本", "tokyo": "日本", "osaka": "日本",
+      "korea": "韩国", "seoul": "韩国",
+      "singapore": "新加坡",
+      "united states": "美国", "america": "美国", "usa": "美国",
+      "los angeles": "美国", "new york": "美国", "seattle": "美国",
+      "germany": "德国", "frankfurt": "德国",
+      "france": "法国", "paris": "法国",
+      "russia": "俄罗斯", "moscow": "俄罗斯",
+      "netherlands": "荷兰", "amsterdam": "荷兰",
+      "canada": "加拿大", "toronto": "加拿大",
+      "australia": "澳大利亚", "sydney": "澳大利亚",
+      "india": "印度",
+      "thailand": "泰国", "bangkok": "泰国",
+      "united kingdom": "英国", "london": "英国", "britain": "英国"
+    };
+    
+    const lowerName = name.toLowerCase();
+    for (const [english, chinese] of Object.entries(englishCountries)) {
+      if (lowerName.includes(english)) {
+        return { tag: chinese, source: "name-english" };
+      }
+    }
+    
+    return null;
   }
 
   async fetchRemoteGeo(ip) {
@@ -1219,7 +1320,7 @@ class Validator {
       return (async () => {
         try {
           const url = api.replace("{ip}", ip);
-          const res = await utils.fetch(url, { timeout: 8000, retry: 0 });
+          const res = await utils.fetch(url, { timeout: 15000, retry: 1 });
           
           if (res && res.ok) {
             const data = res.json();
@@ -1241,18 +1342,23 @@ class Validator {
               }
             }
           }
-        } catch (e) {}
+        } catch (e) {
+          // 改进错误处理: 记录失败原因
+          console.log(`[远程API] ${api} 查询失败: ${e.message}`);
+        }
         return null;
       })();
     });
 
     try {
-      const geoData = await utils.race(promises, 10000);
+      const geoData = await utils.race(promises, 18000);
       if (geoData && geoData.country) {
         utils.cache.set(cacheKey, geoData);
         return geoData;
       }
-    } catch (e) {}
+    } catch (e) {
+      console.log(`[远程API] 所有API查询失败: ${e.message}`);
+    }
     
     return null;
   }
